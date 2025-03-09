@@ -105,10 +105,25 @@ class Student:
       "getTchClazzType": 1,
       "mcode": ""
     }
+    # 发起请求获取课程数据
     resp = requests.get("https://mooc1-api.chaoxing.com/mycourse/backclazzdata", params=params, headers=webFormHeaders, cookies=self.getCookieJar().get_dict(), verify=False).json()
     for channel in resp["channelList"]:
+      # 检查是否为有效的课程项
+      if 'content' not in channel or not isinstance(channel['content'], dict):
+        continue
+      # 检查是否为文件夹项
+      if 'folderName' in channel['content']:
+        continue
+      # 检查是否有roletype字段
+      if 'roletype' not in channel['content']:
+        continue
+      # 检查roletype是否为1
       if channel['content']['roletype'] == 1:
         continue
+      # 检查是否有course字段和data数组
+      if 'course' not in channel['content'] or 'data' not in channel['content']['course']:
+        continue
+        
       for c in channel['content']['course']['data']:
         url = parse.urlparse(c['courseSquareUrl'])
         par = parse.parse_qs(url.query)
@@ -119,8 +134,8 @@ class Student:
           "classId": par['classId'][0],
           "icon": c['imageurl'],
         })
-      # 去重
-      courses = [dict(t) for t in set([tuple(d.items()) for d in courses])]  
+    # 去重（移到循环外，避免重复操作）
+    courses = [dict(t) for t in set([tuple(d.items()) for d in courses])]  
     return courses
 
   def getActivesFromCourse(self, cursor, courses: dict) -> list:
