@@ -1,5 +1,11 @@
 <template>
-  <SignProgressDialog :key="dialogKey" :display="displayDialog" :data="signData" @closeDialog="closeDialog"/>
+  <SignProgressDialog
+    :key="dialogKey"
+    :display="displayDialog"
+    :data="signData"
+    :qrCodeBoardRef="qrCodeBoardRef"
+    @closeDialog="closeDialog"
+  />
   <div style="overflow-y: auto;height: 100%;width: 100%;">
     <div style="height: fit-content;width: 100%;padding: 8px;box-sizing: border-box;">
       <div style="display: flex;flex-direction: row;align-items: center;">
@@ -17,7 +23,12 @@
           </template>
         </var-cell>
         <var-divider margin="0"></var-divider>
-        <component :is="signBoards[currentActive.signType]" :signCallBack="signCallBack"></component>
+        <component
+          :is="signBoards[currentActive.signType]"
+          :signCallBack="signCallBack"
+          :enableSmartMonitoring="currentActive.signType === SignType.qrCode.id"
+          ref="currentSignBoard"
+        ></component>
       </var-paper>
 
       <div style="display: flex;flex-direction: row;align-items: center;">
@@ -69,6 +80,9 @@ const classmates = ref([]);
 const displayDialog = ref(false);
 const signData = reactive({});
 const dialogKey = ref(Date.now());
+// 新增：二维码组件引用和当前签到组件引用
+const qrCodeBoardRef = ref(null);
+const currentSignBoard = ref(null);
 
 const signBoards = {
   [SignType.code.id]: CodeBoard,
@@ -119,13 +133,23 @@ function toggleClassmateSelection(uid) {
 }
 
 function signCallBack(data) {
+  console.log('signCallBack 被调用，数据:', data, '签到类型:', currentActive.value.signType);
+
   if (displayDialog.value) {
+    console.log('对话框已显示，忽略回调');
     return;
   }
   if (isLoading.value) {
     Snackbar.warning('加载同学列表中，请稍后');
     return;
   }
+
+  // 更新二维码组件引用
+  if (currentActive.value.signType === SignType.qrCode.id && currentSignBoard.value) {
+    qrCodeBoardRef.value = currentSignBoard.value;
+    console.log('已设置二维码组件引用，组件实例:', currentSignBoard.value);
+  }
+
   signData.signType = currentActive.value.signType;
   signData.fixedParams = {
     courseId: currentClass.value.courseId,
@@ -139,7 +163,9 @@ function signCallBack(data) {
     uid: mate.uid,
     name: mate.name,
     mobile: mate.mobile
-  }));  
+  }));
+
+  console.log('准备显示签到对话框，签到数据:', signData);
   displayDialog.value = true;
 }
 
