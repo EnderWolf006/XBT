@@ -1,0 +1,26 @@
+# 当前环境 prod / test / dev
+app_env: prod
+
+# 端口号，默认为 3030
+http_addr: ":3030"
+
+# JWT 签名密钥，务必修改
+jwt_secret: "You_can_write_anything_here_but_change_me"
+
+# 账号密码加解密密钥，务必修改
+credential_secret: "You_can_write_anything_here_but_change_me"
+
+# 允许不安全的 TLS 连接，如果你不知道何意味保持 true 即可
+allow_insecure_tls: true
+
+# 学习通 AES 加密密钥，无需修改
+chaoxing_aes_key: "u2oh6Vu^HWe4_AES"
+
+# 请求学习通的 User-Agent，如果你不知道何意味保持默认值即可
+chaoxing_user_agent: "Dalvik/2.1.0 (Linux; U; Android 14; Redmi K20 Pro Build/UKQ1.230804.001) (schild:0945de15614364966e17460057ab5aa6) (device:Redmi K20 Pro) Language/zh_CN com.chaoxing.mobile/ChaoXingStudy_3_6.4.8_android_phone_10834_264 (@Kalimdor)_aa664e5fbb1d46df8e5aa65f62a438d8"
+
+# 每门课程返回给前端的活动上限（默认 5）
+activity_list_limit: 5
+
+# postgres 数据库连接字符串
+postgres_dsn: "host=example.com port=5432 user=admin password=114514 dbname=xbt sslmode=disable TimeZone=Asia/Shanghai"

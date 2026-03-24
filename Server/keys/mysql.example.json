@@ -1,9 +1,0 @@
-{
-  "host": "example.com",
-  "port": 3306,
-  "user": "root",
-  "passwd": "114514",
-  "db": "xbt",
-  "charset": "utf8mb4",
-  "maxconnections": 8
-}

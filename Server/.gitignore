@@ -1,7 +1,1 @@
-# XBT Sensitive files
-*.pem
-mysql.json
-
-# Python pycache
-*.pyc
-**/__pycache__/
+config.yaml

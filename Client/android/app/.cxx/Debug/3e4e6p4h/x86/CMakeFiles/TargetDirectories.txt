@@ -1,2 +1,0 @@
-/Users/doge/Documents/Python/XBT/Client/android/app/.cxx/Debug/3e4e6p4h/x86/CMakeFiles/edit_cache.dir
-/Users/doge/Documents/Python/XBT/Client/android/app/.cxx/Debug/3e4e6p4h/x86/CMakeFiles/rebuild_cache.dir

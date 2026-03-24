@@ -1,2 +1,0 @@
-/Users/doge/Documents/Android/XBT/Client/android/app/.cxx/RelWithDebInfo/5z1g6c1j/arm64-v8a/CMakeFiles/edit_cache.dir
-/Users/doge/Documents/Android/XBT/Client/android/app/.cxx/RelWithDebInfo/5z1g6c1j/arm64-v8a/CMakeFiles/rebuild_cache.dir

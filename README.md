@@ -1,173 +1,288 @@
+# 学不通 2.0 (XBT2.0)
 
-<center><div align="center">
+> 一套面向学习通签到场景的三端协同系统：`Web 管理端` + `Go 后端` + `Android 原生壳`
 
-<img src="Images/Icons/icon.png" width = 256 height = 256 /></img>
-# 学不通
-### 一人签到，全寝睡觉
-</div></center>
+[![Web](https://img.shields.io/badge/Web-React%2019%20%2B%20Vite-61dafb)](#)
+[![Server](https://img.shields.io/badge/Server-Go%201.25%20%2B%20Gin-00add8)](#)
+[![Database](https://img.shields.io/badge/DB-PostgreSQL-336791)](#)
+[![Android](https://img.shields.io/badge/Android-Compose%20%2B%20CameraX-3ddc84)](#)
+[![License](https://img.shields.io/badge/License-Private-lightgrey)](#)
 
+---
 
-## 软件功能
-- 只需1人即可代签n人, 帮助同使用本软件的同班同学签到
-- 可选的代签生效课程, 自动识别同班同学
-- 支持签到码/二维码/手势/位置(可自选)/普通签到
-- 支持绕过签到滑块人机验证码
-- 用户白名单机制(需手动在UserPerm添加)
-- 提供 `Web前端版本` 以及 `Flutter客户端` 版本
+## 项目简介
+
+学不通 2.0 是一个围绕课程签到管理与执行的工具型项目，核心能力包括：
+
+- 学习通账号登录与鉴权
+- 课程同步与监控课程选择
+- 签到活动聚合展示（按课程分组）
+- 多人代签与状态跟踪
+- 多签到类型支持（普通 / 二维码 / 手势 / 位置 / 签到码）
+- 管理员白名单维护（单条添加、批量导入、删除）
+- 多账号本地切换
+
+---
+
+## 核心特性
+
+### 1) 三端协同架构
+
+- `Web`：主业务 UI，负责课程配置、活动查看、签到执行、白名单管理
+- `Server`：鉴权、课程与活动数据聚合、签到执行、权限控制
+- `Android`：WebView 容器 + 原生相机桥接，提升扫码体验与机型兼容性
+
+### 2) 多类型签到统一流程
+
+- 普通签到：直接执行
+- 手势 / 签到码：输入 `sign_code` 执行
+- 位置签到：选择预设地点后提交经纬度与地点描述
+- 二维码签到：扫码后自动解析 `enc/c` 并并发执行
+
+### 3) 并发执行 + 重试机制
+
+- 执行前先调用 `/api/sign/check` 过滤已签用户
+- 对待签用户并发调用 `/api/sign/execute`
+- 内置失败重试与进度可视化，支持中断
+
+### 4) 权限模型清晰
+
+- `permission = 1`：普通用户
+- `permission = 2`：管理员
+- 管理端白名单接口仅管理员可访问
+
+---
 
 ## 技术栈
-- 前端: Vue, Vite, Pinia, Vue Router, Varlet, JS & TS
-- 客户端: Flutter, Dart, Dio
-- 后端: Python, Flask, Mysql
 
-## 实机截屏 - Web
-| **签到主页** | **选课配置页** | **用户设置页** | **登录页** |
-|:---:|:---:|:---:|:---:|
-|<div align="center"> <img src="Images/w1.jpg">|<div align="center"> <img src="Images/w2.jpg">|<div align="center"> <img src="Images/w3.jpg">|<div align="center"> <img src="Images/w10.jpg">|
-| **普通签到** | **手势签到** | **位置签到** | **签到码签到** |
-|<div align="center"> <img src="Images/w4.jpg">|<div align="center"> <img src="Images/w5.jpg">|<div align="center"> <img src="Images/w6.jpg">|<div align="center"> <img src="Images/w7.jpg">|
-| **二维码签到** | **签到结果页** |
-|<div align="center"> <img src="Images/w8.jpg">|<div align="center"> <img src="Images/w9.jpg">|
+### Web (`/Web`)
 
-## 实机截屏 - Android
-| **签到主页** | **选课配置页** | **用户设置页** | **登录页** |
-|:---:|:---:|:---:|:---:|
-|<div align="center"> <img src="Images/f1.jpg">|<div align="center"> <img src="Images/f2.jpg">|<div align="center"> <img src="Images/f3.jpg">|<div align="center"> <img src="Images/f10.jpg">|
-| **普通签到** | **手势签到** | **位置签到** | **签到码签到** |
-|<div align="center"> <img src="Images/f4.jpg">|<div align="center"> <img src="Images/f5.jpg">|<div align="center"> <img src="Images/f6.jpg">|<div align="center"> <img src="Images/f7.jpg">|
-| **二维码签到** | **签到结果页** |
-|<div align="center"> <img src="Images/f8.jpg">|<div align="center"> <img src="Images/f9.jpg">|
+- React 19 + TypeScript
+- Vite 8
+- TailwindCSS 4
+- Zustand（本地多账号状态管理）
+- Axios（统一请求/鉴权拦截）
+- Framer Motion（动效）
+- html5-qrcode（浏览器扫码）
 
-## 交流反馈
-喜欢本项目的话，求点亮Star🙏
-- [QQ群: 250369908](https://qm.qq.com/cgi-bin/qm/qr?k=yxbcu6vNZm3JvJElnCRHGbMgmNOADF6H&jump_from=webapi&authKey=+4fa+h7XTvKdeECaauj7wEFLOhVAkrtFNUh0VMcC3bP8eAeUqiXwctprZJOFHfkh)
-- [Telegram: XueBT](https://t.me/XueBT)
+### Server (`/Server`)
 
+- Go 1.25
+- Gin
+- GORM
+- PostgreSQL
+- JWT 鉴权
+- YAML 配置加载
 
-## 食用方法
-> 本教程稍有难度，**需一定的计算机基础**，如抱着“下载直接用”, “网上找个资源圈钱”的心态阅读此说明，可以洗洗睡了。
+### Android (`/Android`)
 
-### 开始前准备
-部署使用本项目需有：
-- 公网IP的云服务器
-- 解析向服务器的域名（中国大陆需先备案）
-- SSL证书(Web调用摄像头API扫码必须要开启Https)
-
-### 公私钥生成
-因涉及到账号密码网络传输，开始前需先生成自己的公私钥对
-
-- 首先你的电脑中需要安装好Python环境
-- 安装pycryptodome库 `pip install pycryptodome`
-- 运行 `/Tools/genKey.py` 自动生成公私钥对
-- 生成好的公钥位于 `Client/assets/keys/public.pem`, `Server/keys/public.pem` 和 `Web/public/keys/public.pem` 中
-- 生成好的私钥位于 `Server/keys/private.pem` 中
-- 检查它们是否成功生成，并妥善保管私钥，以防泄漏
+- Kotlin + Jetpack Compose
+- WebView 容器化
+- CameraX + ML Kit（原生扫码）
+- JavaScript Bridge（原生相机与 Web 页面通信）
 
 ---
 
-### 前端部署
-客户端相关文件均在 `/Web` 文件夹下
+## 系统架构
 
-#### 修改配置
-客户端配置文件在 `src/config.example.js` 中，复制(Duplicate)一份并重命名为 `config.js` 使用按照注释与预设的格式修改即可。
-
-#### 打包
-- 安装依赖 `npm i`
-- 本地测试 `npm run dev`
-- 打包dist `npm run build`
-
----
-
-### 客户端部署
-客户端相关文件均在 `/Client` 文件夹下
-
-#### 修改配置
-客户端配置文件在 `lib/config.example.dart` 中，复制(Duplicate)一份并重命名为 `config.dart` 使用按照注释与预设的格式修改即可。
-
-#### 打包
-- `flutter build apk --release` 打包安卓客户端
+```mermaid
+flowchart LR
+  U["用户"] --> W["Web 前端 (React)"]
+  U --> A["Android App (WebView + CameraX)"]
+  W --> S["Go Server (Gin)"]
+  A --> S
+  S --> D["PostgreSQL"]
+  S --> X["学习通相关接口"]
+```
 
 ---
 
-### 后端部署
-后端相关文件均在 `/Server` 文件夹下
+## 目录结构
 
-#### Mysql 初始化
-> 注：Mysql中的 `UserPerm` 表为用户权限表，目前作用仅为实现白名单，你需要给每个需要使用本项目的同学添加进白名单，把Ta的手机号填入 `mobile` 字段，然后将 `permission` 字段设为1即可。
+```text
+XBT2.0
+├── Web/                  # React 前端
+│   ├── src/pages/        # 业务页面（登录、课程、签到、白名单、账号管理、扫码）
+│   ├── src/components/   # 组件（签到输入、下拉刷新、路由保护等）
+│   ├── src/store/        # Zustand 状态（账号/Token）
+│   └── config.yaml       # 前端配置（API、位置预设）
+├── Server/               # Go 后端
+│   ├── cmd/server/       # 入口
+│   ├── internal/         # 业务逻辑（handler/service/middleware/...）
+│   ├── config.yaml       # 后端配置
+│   ├── init.sql          # PostgreSQL 初始化脚本
+│   └── API.md            # 接口文档
+├── Android/              # Android 原生壳
+└── README.md
+```
 
-Mysql 初始化文件在 `Server/xbt.sql` 中，在你的Mysql中创建一个名为xbt(你自己命名也可以，后端配置文件中可以配置)的库并运行此文件。
+---
 
-#### 安装依赖
-在 `/Server` 中打开终端，运行 `pip install -r requirements.txt` 安装后端依赖
+## 快速开始（本地开发）
 
-#### 修改配置
-后端配置文件在 `mysql.example.json` 中，复制(Duplicate)一份并重命名为 `mysql.json` 使用按照注释与预设的格式修改即可。
+### 0) 环境要求
 
-#### 运行
-使用 `python ./index.py` 即可运行，服务将开放于3030端口
+- Node.js 20+
+- Go 1.25+
+- PostgreSQL 14+（项目脚本按 PostgreSQL 18+ 编写，低版本一般也可用）
+- Android Studio（如需构建移动端）
 
-#### 跨域反代
-由于Python后端并没有进行CORS相关配置，需反代解决（以Nginx为例）
-```conf
-# HTTP 到 HTTPS 重定向
-server {
-    listen 80;
-    # 替换为你的域名
-    server_name api.xbt.example.com;
-    return 301 https://$host$request_uri;
-}
+### 1) 初始化数据库
 
-# API 后端配置
-server {
-    listen 443 ssl;
-    # 替换为你的域名
-    server_name api.xbt.example.com;
+```bash
+# 示例：创建数据库后执行
+psql -U <user> -d <dbname> -f Server/init.sql
+```
 
-    # SSL 证书路径（需替换为实际路径）
-    ssl_certificate /home/ubuntu/Nginx/keys/api.crt;
-    ssl_certificate_key /home/ubuntu/Nginx/keys/api.key;
+### 2) 启动后端
 
-    # 可选的 SSL 配置优化
-    ssl_protocols TLSv1.2 TLSv1.3;
-    ssl_prefer_server_ciphers on;
-    ssl_ciphers EECDH+AESGCM:EDH+AESGCM:AES256+EECDH:AES256+EDH;
+```bash
+cd Server
+go mod download
+go run ./cmd/server
+```
 
-    location / {
-        proxy_pass http://localhost:3030;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        fastcgi_buffers 256 128k;
-        chunked_transfer_encoding off;
-        # python没有处理跨域问题，这里反代处理, 添加 CORS 头
-        add_header 'Access-Control-Allow-Origin' '*' always;
-        add_header 'Access-Control-Allow-Methods' 'GET, POST, OPTIONS, PUT, DELETE' always;
-        add_header 'Access-Control-Allow-Headers' 'DNT,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Range,Token,Version' always;
+默认监听：`http://localhost:3030`
 
-        # 处理 OPTIONS 预检请求
-        if ($request_method = 'OPTIONS') {
-            add_header 'Access-Control-Allow-Origin' '*' always;
-            add_header 'Access-Control-Allow-Methods' 'GET, POST, OPTIONS, PUT, DELETE' always;
-            add_header 'Access-Control-Allow-Headers' 'DNT,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Range,Token,Version' always;
-            add_header 'Content-Length' 0;
-            return 204;
-        }
-    }
+健康检查：
+
+```bash
+curl http://localhost:3030/api/health
+```
+
+### 3) 启动前端
+
+```bash
+cd Web
+npm install
+npm run dev
+```
+
+默认地址：`http://localhost:5173`
+
+开发模式下，Vite 已将 `/api` 代理到 `http://localhost:3030`。
+
+### 4) 启动 Android（可选）
+
+```bash
+cd Android
+./gradlew assembleDebug
+```
+
+Android 壳默认目标地址来自 `Android/app/src/main/res/values/strings.xml` 中的 `target_url`。
+
+---
+
+## 配置说明
+
+### 后端配置：`Server/config.yaml`
+
+关键字段：
+
+- `app_env`：运行环境标识（`dev/development` -> Gin `debug`，`prod/production` -> Gin `release`，`test/testing` -> Gin `test`）
+- `http_addr`：服务监听地址（默认 `:3030`）
+- `jwt_secret`：JWT 签名密钥（生产必须修改）
+- `credential_secret`：账号凭据加密密钥（生产必须修改）
+- `postgres_dsn`：PostgreSQL 连接串
+- `activity_list_limit`：每门课返回活动上限（默认 `5`）
+- `allow_insecure_tls`：是否允许不安全 TLS（生产建议关闭）
+
+### 前端配置：`Web/config.yaml`
+
+关键字段：
+
+- `api.base_url`：默认 `/api`
+- `api.timeout`：请求超时
+- `sign.location_presets`：位置签到预设点（名称 / 经纬度 / 描述）
+
+---
+
+## 业务流程（简版）
+
+1. 用户通过手机号/密码登录（`/api/auth/login`）
+2. 同步课程（`/api/courses/sync`）
+3. 选择需要监控的课程（`/api/courses/selection`）
+4. 首页拉取签到活动（`/api/sign/activities`）
+5. 进入活动详情，勾选代签同学
+6. 执行签到前检查状态（`/api/sign/check`）
+7. 并发执行签到（`/api/sign/execute`）
+
+---
+
+## API 文档
+
+完整接口说明见：
+
+- [Server/API.md](./Server/API.md)
+
+接口前缀：`/api`  
+统一返回结构：
+
+```json
+{
+  "code": 0,
+  "message": "ok",
+  "data": {}
 }
 ```
 
 ---
 
+## 数据库表概览
+
+核心表（详见 `Server/init.sql`）：
+
+- `users`：用户与加密凭据
+- `whitelists`：白名单（普通/管理员）
+- `courses`：课程基础信息
+- `user_courses`：用户-课程关系与选课状态
+- `sign_activities`：活动缓存
+- `sign_records`：签到记录
+
+---
+
+## 安全与合规提示
+
+- 本项目包含账号登录、课程与签到数据处理能力，部署前请确认符合法律法规与学校/平台使用规范。
+- 仓库中的示例配置（如密钥、DSN）仅用于开发演示，生产环境务必替换。
+- 建议使用 HTTPS、最小权限数据库账号、独立密钥管理和访问审计。
+
+---
+
+## 常见问题
+
+### 1) 为什么前端请求不到后端？
+
+- 检查后端是否运行在 `:3030`
+- 检查 `Web/vite.config.ts` 代理配置
+- 若为生产环境，确认网关将 `/api` 正确转发到后端
+
+### 2) 登录后提示无权限？
+
+- 白名单非空时，仅白名单用户可登录
+- 白名单为空时，首次登录用户会自动成为管理员
+
+### 3) 二维码签到在部分设备不稳定？
+
+- Web 端会走 `html5-qrcode`
+- Android 壳可借助 CameraX + ML Kit + 原生桥接增强稳定性
+
+---
+
+## 开发建议
+
+- 提交前执行：
+
+```bash
+# Web
+cd Web && npm run lint && npm run build
+
+# Server
+cd Server && go test ./...
+```
+
+---
+
 ## 免责声明
-本项目仅作为交流学习使用，通过本项目加深网络通信、接口编写、交互设计等方面知识的理解，请勿用作商业用途，任何人或组织使用项目中代码进行的任何违法行为与本人无关。如有触及相关平台规定或者权益，烦请联系我删除。         
 
-## 开源协议
-
-本软件遵循 `GPLv3` 开源协议，以下为该协议内容解读摘要:
-
-* 可自由复制 你可以将软件复制到你的电脑，你客户的电脑，或者任何地方。复制份数没有任何限制
-* 可自由分发 在你的网站提供下载，拷贝到U盘送人，或者将源代码打印出来从窗户扔出去（环保起见，请别这样做）。
-* 可以用来盈利 你可以在分发软件的时候收费，但你必须在收费前向你的客户提供该软件的 GNU GPL 许可协议，以便让他们知道，他们可以从别的渠道免费得到这份软件，以及你收费的理由。
-* 可自由修改 如果你想添加或删除某个功能，没问题，如果你想在别的项目中使用部分代码，也没问题，唯一的要求是，使用了这段代码的项目也必须使用 GPL 协议。
-* 如果有人和接收者签了合同性质的东西，并提供责任承诺，则授权人和作者不受此责任连带。
+本项目仅用于技术研究与学习交流，请勿用于任何违反平台规则、学校管理规定或法律法规的场景。使用者需自行承担相应责任。

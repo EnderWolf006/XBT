@@ -1,0 +1,49 @@
+@import "tailwindcss";
+
+@theme {
+  --spacing-safe-top: env(safe-area-inset-top);
+  --spacing-safe-bottom: env(safe-area-inset-bottom);
+  --spacing-safe-left: env(safe-area-inset-left);
+  --spacing-safe-right: env(safe-area-inset-right);
+}
+
+@layer base {
+  :root {
+    --sat: env(safe-area-inset-top);
+    --sab: env(safe-area-inset-bottom);
+    --sal: env(safe-area-inset-left);
+    --sar: env(safe-area-inset-right);
+  }
+
+  body {
+    user-select: none;
+    -webkit-user-select: none;
+    /* Prevent bouncing on some mobile browsers */
+    overscroll-behavior-y: none;
+  }
+  input, textarea, [contenteditable="true"] {
+    user-select: text;
+    -webkit-user-select: text;
+  }
+}
+
+@keyframes smooth-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.animate-smooth-spin {
+  animation: smooth-spin 1s linear infinite;
+}
+
+@keyframes water-wave {
+  0% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
+
+.animate-water-wave {
+  background: linear-gradient(-45deg, #eff6ff, #dbeafe, #eff6ff, #ffffff);
+  background-size: 400% 400%;
+  animation: water-wave 3s ease infinite;
+}

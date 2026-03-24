@@ -1,30 +1,44 @@
 {
   "name": "xbt-web",
-  "version": "0.0.0",
   "private": true,
+  "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "vite build",
+    "dev": "vite --host",
+    "build": "tsc -b && vite build",
+    "lint": "eslint .",
     "preview": "vite preview"
   },
   "dependencies": {
-    "@varlet/touch-emulator": "^3.10.3",
-    "@varlet/ui": "^3.10.2",
-    "@zxing/library": "^0.21.3",
-    "axios": "^1.8.4",
-    "dayjs": "^1.11.13",
-    "encrypt": "^0.0.1",
-    "jsencrypt": "^3.3.2",
-    "pinia": "^3.0.2",
-    "pinia-plugin-persistedstate": "^4.2.0",
-    "typescript": "^5.8.3",
-    "vue": "^3.5.13",
-    "vue-router": "^4.5.0"
+    "@tailwindcss/vite": "^4.2.2",
+    "axios": "^1.13.6",
+    "clsx": "^2.1.1",
+    "framer-motion": "^12.38.0",
+    "html5-qrcode": "^2.3.8",
+    "lucide-react": "^0.577.0",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
+    "react-hot-toast": "^2.6.0",
+    "react-router-dom": "^7.13.1",
+    "tailwind-merge": "^3.5.0",
+    "zustand": "^5.0.12"
   },
   "devDependencies": {
-    "@vitejs/plugin-vue": "^5.2.3",
-    "vite": "^6.2.4",
-    "vite-plugin-vue-devtools": "^7.7.2"
+    "@eslint/js": "^9.39.4",
+    "@rollup/plugin-yaml": "^4.1.2",
+    "@types/node": "^24.12.0",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.1",
+    "autoprefixer": "^10.4.27",
+    "eslint": "^9.39.4",
+    "eslint-plugin-react-hooks": "^7.0.1",
+    "eslint-plugin-react-refresh": "^0.5.2",
+    "globals": "^17.4.0",
+    "postcss": "^8.5.8",
+    "tailwindcss": "^4.2.2",
+    "typescript": "~5.9.3",
+    "typescript-eslint": "^8.57.0",
+    "vite": "^8.0.1"
   }
 }
