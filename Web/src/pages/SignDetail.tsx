@@ -86,9 +86,9 @@ const SignDetail = () => {
     });
   }, [classmates, currentUser]);
 
-  const getSignStateLabel = (source: number, name: string) => {
+  const getSignStateLabel = (targetUid: number, source: number, name: string) => {
     if (source === -1) return '学习通签到';
-    if (source === currentUser?.uid) return '本人签到';
+    if (source === targetUid) return '本人签到';
     return `${name}代签`;
   };
 
@@ -414,8 +414,8 @@ const SignDetail = () => {
                       <div className="flex items-center gap-2 mb-0.5 min-w-0">
                         <p className="font-bold text-base text-slate-800 leading-tight truncate">{student.name}</p>
                         {classmateSignStates[student.uid]?.signed && (
-                          <span className="max-w-[140px] truncate text-[10px] px-1.5 py-0.5 rounded-md font-medium shrink-0 bg-green-100 text-green-700" title={getSignStateLabel(classmateSignStates[student.uid].record_source, classmateSignStates[student.uid].record_source_name)}>
-                            {getSignStateLabel(classmateSignStates[student.uid].record_source, classmateSignStates[student.uid].record_source_name)}
+                          <span className="max-w-[140px] truncate text-[10px] px-1.5 py-0.5 rounded-md font-medium shrink-0 bg-green-100 text-green-700" title={getSignStateLabel(student.uid, classmateSignStates[student.uid].record_source, classmateSignStates[student.uid].record_source_name)}>
+                            {getSignStateLabel(student.uid, classmateSignStates[student.uid].record_source, classmateSignStates[student.uid].record_source_name)}
                           </span>
                         )}
                       </div>
