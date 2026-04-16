@@ -1,10 +1,10 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence, LayoutGroup } from 'framer-motion';
-import { 
-  User as UserIcon, 
-  Settings, 
-  ShieldCheck, 
+import {
+  User as UserIcon,
+  Settings,
+  ShieldCheck,
   RefreshCw,
   Clock,
   ChevronRight,
@@ -23,6 +23,11 @@ import { useAuthStore } from '../store/auth';
 import { getChineseStringByDatetime } from '../utils/datetime';
 import type { ApiResponse, CourseActivities } from '../types';
 import PullToRefresh from '../components/PullToRefresh';
+
+type PendingActivityEntry = {
+  activity: CourseActivities['activities'][number];
+  course: CourseActivities;
+};
 
 const RefreshIndicator = ({ spinning }: { spinning: boolean }) => {
   const rafRef = useRef<number | null>(null);
@@ -89,16 +94,17 @@ const RefreshIndicator = ({ spinning }: { spinning: boolean }) => {
 const Lobby = () => {
   const { user, activeUid } = useAuthStore();
   const navigate = useNavigate();
-  
+
   // Initialize from cache if available
   const [activities, setActivities] = useState<CourseActivities[]>(() => {
     const cached = localStorage.getItem(`cached_activities_${activeUid}`);
     return cached ? JSON.parse(cached) : [];
   });
-  
+
   const [isLoading, setIsLoading] = useState(false);
   const [expandedCourses, setExpandedCourses] = useState<Record<string, boolean>>({});
   const [now, setNow] = useState(Date.now());
+  const [pendingEntry, setPendingEntry] = useState<PendingActivityEntry | null>(null);
 
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), 1000);
@@ -108,13 +114,13 @@ const Lobby = () => {
   const fetchActivities = useCallback(async () => {
     // Prevent multiple requests if already loading
     if (isLoading) return;
-    
+
     setIsLoading(true);
     try {
       const response = await client.get<ApiResponse<CourseActivities[]>>('/sign/activities');
       const data = response.data.data;
       setActivities(data || []);
-      
+
       // Update cache
       if (activeUid && data) {
         localStorage.setItem(`cached_activities_${activeUid}`, JSON.stringify(data));
@@ -165,12 +171,25 @@ const Lobby = () => {
     return `${name}代签`;
   };
 
+  const enterActivity = (activity: CourseActivities['activities'][number], course: CourseActivities) => {
+    navigate(`/sign/${activity.active_id}`, { state: { activity, course } });
+  };
+
+  const handleActivityClick = (activity: CourseActivities['activities'][number], course: CourseActivities, shouldHighlight: boolean) => {
+    if (shouldHighlight) {
+      enterActivity(activity, course);
+      return;
+    }
+
+    setPendingEntry({ activity, course });
+  };
+
   return (
     <div className="flex-1 flex flex-col bg-slate-50 relative overflow-hidden">
       {/* Header */}
       <div className="bg-white sticky top-0 z-10 border-b border-slate-100 px-4 h-[calc(80px+var(--sat))] pt-[var(--sat)] flex items-center shrink-0">
         <div className="flex items-center justify-between w-full">
-          <motion.div 
+          <motion.div
             whileTap={{ scale: 0.92 }}
             onClick={() => navigate('/accounts')}
             className="flex items-center space-x-3 cursor-pointer hover:opacity-80 transition-opacity"
@@ -193,7 +212,7 @@ const Lobby = () => {
             </div>
           </motion.div>
           <div className="flex items-center space-x-1">
-            <motion.button 
+            <motion.button
               whileTap={{ scale: 0.92 }}
               onClick={() => navigate('/courses')}
               className="p-2 text-slate-600 hover:bg-slate-50 rounded-lg transition-colors"
@@ -201,7 +220,7 @@ const Lobby = () => {
             >
               <Settings size={20} />
             </motion.button>
-            <motion.button 
+            <motion.button
               whileTap={{ scale: 0.92 }}
               onClick={fetchActivities}
               className="p-2 text-slate-600 hover:bg-slate-50 rounded-lg transition-colors"
@@ -210,7 +229,7 @@ const Lobby = () => {
               <RefreshIndicator spinning={isLoading} />
             </motion.button>
             {user && user.permission >= 2 && (
-              <motion.button 
+              <motion.button
                 whileTap={{ scale: 0.92 }}
                 onClick={() => navigate('/admin/whitelist')}
                 className="p-2 text-slate-600 hover:bg-slate-50 rounded-lg transition-colors"
@@ -224,8 +243,8 @@ const Lobby = () => {
       </div>
 
       {/* Main Content */}
-      <PullToRefresh 
-        onRefresh={fetchActivities} 
+      <PullToRefresh
+        onRefresh={fetchActivities}
         isRefreshing={isLoading}
         className="p-4"
       >
@@ -246,23 +265,23 @@ const Lobby = () => {
               {activities.map((course) => {
                 const key = `${course.course_id}-${course.class_id}`;
                 const isExpanded = expandedCourses[key];
-                const activeCount = course.activities.filter(a => 
+                const activeCount = course.activities.filter(a =>
                   now < a.end_time && !a.record_source_name
                 ).length;
-                
+
                 // Find the latest activity time for the header
                 const latestActivityTime = course.activities.length > 0
                   ? Math.max(...course.activities.map(a => a.start_time))
                   : null;
 
                 return (
-                  <motion.div 
+                  <motion.div
                     layout
-                    key={key} 
+                    key={key}
                     className="bg-white rounded-3xl border border-slate-100 shadow-sm overflow-hidden"
                   >
                     {/* Course Header */}
-                    <motion.div 
+                    <motion.div
                       layout="position"
                       onClick={() => toggleCourse(course.course_id, course.class_id)}
                       className={`p-4 flex items-center justify-between cursor-pointer active:bg-slate-50 transition-colors ${isExpanded ? 'bg-slate-50/50' : ''}`}
@@ -321,7 +340,7 @@ const Lobby = () => {
                                 const isOngoing = now < activity.end_time;
                                 const isFinished = !!activity.record_source_name;
                                 const shouldHighlight = isOngoing && !isFinished;
-                                
+
                                 // Countdown logic
                                 let countdownStr = "";
                                 if (shouldHighlight) {
@@ -336,17 +355,15 @@ const Lobby = () => {
                                     key={activity.active_id}
                                     layout
                                     whileTap={{ scale: 0.92 }}
-                                    onClick={() => navigate(`/sign/${activity.active_id}`, { state: { activity, course } })}
-                                    className={`flex items-center justify-between p-3 rounded-2xl border transition-all group cursor-pointer ${
-                                      shouldHighlight 
-                                        ? 'bg-purple-50 border-purple-600' 
-                                        : 'bg-blue-50/50 border-blue-100/50 hover:bg-blue-50'
-                                    }`}
+                                    onClick={() => handleActivityClick(activity, course, shouldHighlight)}
+                                    className={`flex items-center justify-between p-3 rounded-2xl border transition-all group cursor-pointer ${shouldHighlight
+                                      ? 'bg-purple-50 border-purple-600'
+                                      : 'bg-blue-50/50 border-blue-100/50 hover:bg-blue-50'
+                                      }`}
                                   >
                                     <div className="flex items-center space-x-3 flex-1 min-w-0">
-                                      <div className={`w-10 h-10 rounded-xl flex items-center justify-center shadow-sm flex-shrink-0 bg-white ${
-                                        shouldHighlight ? 'text-purple-600' : 'text-blue-600'
-                                      }`}>
+                                      <div className={`w-10 h-10 rounded-xl flex items-center justify-center shadow-sm flex-shrink-0 bg-white ${shouldHighlight ? 'text-purple-600' : 'text-blue-600'
+                                        }`}>
                                         {getSignTypeIcon(activity.sign_type)}
                                       </div>
                                       <div className="flex-1 min-w-0">
@@ -400,6 +417,53 @@ const Lobby = () => {
           )}
         </div>
       </PullToRefresh>
+
+      <AnimatePresence>
+        {pendingEntry && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/45 backdrop-blur-sm p-6"
+            onClick={() => setPendingEntry(null)}
+          >
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 12 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 12 }}
+              transition={{ type: 'spring', stiffness: 320, damping: 26 }}
+              className="w-full max-w-sm rounded-[2rem] bg-white p-6 shadow-2xl border border-slate-100"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="space-y-3">
+                <div>
+                  <p className="text-lg font-black text-slate-900">温馨提示</p>
+                  <p className="text-sm text-slate-500 mt-1 leading-6">
+                    当前点击的签到活动（{pendingEntry.activity.activity_name}）已结束或已完成，仍要进入详情页吗？
+                  </p>
+                </div>
+                <div className="flex items-center gap-3 pt-2">
+                  <button
+                    onClick={() => {
+                      enterActivity(pendingEntry.activity, pendingEntry.course);
+                      setPendingEntry(null);
+                    }}
+                    className="flex-1 rounded-xl bg-slate-100 px-4 py-3 text-sm font-bold text-slate-600 transition-colors hover:bg-slate-200"
+                  >
+                    确认进入
+                  </button>
+                  <button
+                    onClick={() => setPendingEntry(null)}
+                    className="flex-1 rounded-xl bg-blue-600 px-4 py-3 text-sm font-bold text-white shadow-lg shadow-blue-100 transition-colors hover:bg-blue-700"
+                  >
+                    取消
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 };

@@ -73,8 +73,11 @@ func (h *SignHandler) Activities(c *gin.Context) {
 	for _, sc := range selected {
 		sc := sc
 		eg.Go(func() error {
-			group, ok := h.buildCourseActivityGroup(uid, user, password, sc)
-			if !ok {
+			group, err := h.buildCourseActivityGroup(uid, user, password, sc)
+			if err != nil {
+				return err
+			}
+			if group == nil {
 				return nil
 			}
 			respMu.Lock()
@@ -83,7 +86,14 @@ func (h *SignHandler) Activities(c *gin.Context) {
 			return nil
 		})
 	}
-	_ = eg.Wait()
+	if err := eg.Wait(); err != nil {
+		if isXXTAuthError(err) {
+			common.Fail(c, 401, "学习通登录已失效，请使用新密码重新登录")
+			return
+		}
+		common.Fail(c, 500, err.Error())
+		return
+	}
 
 	// 课程分组按“组内最新活动时间”倒序
 	sort.Slice(resp, func(i, j int) bool {
@@ -112,11 +122,11 @@ func (h *SignHandler) Activities(c *gin.Context) {
 	common.Success(c, resp)
 }
 
-func (h *SignHandler) buildCourseActivityGroup(uid int64, user model.User, password string, sc selectedCourseInfo) (gin.H, bool) {
+func (h *SignHandler) buildCourseActivityGroup(uid int64, user model.User, password string, sc selectedCourseInfo) (gin.H, error) {
 	actives, err := h.xxt.GetActives(user.Mobile, password, sc.CourseID, sc.ClassID)
 	if err != nil {
 		log.Printf("get actives failed: uid=%d course=%d class=%d err=%v", uid, sc.CourseID, sc.ClassID, err)
-		return nil, false
+		return nil, err
 	}
 	log.Printf("actives fetched: uid=%d course=%d class=%d count=%d", uid, sc.CourseID, sc.ClassID, len(actives))
 	items := make([]gin.H, 0)
@@ -238,7 +248,7 @@ func (h *SignHandler) buildCourseActivityGroup(uid int64, user model.User, passw
 		"icon":           sc.Icon,
 		"activities":     items,
 		"has_more":       hasMore,
-	}, true
+	}, nil
 }
 
 func (h *SignHandler) Classmates(c *gin.Context) {

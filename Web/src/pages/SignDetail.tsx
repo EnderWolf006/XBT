@@ -17,7 +17,7 @@ import {
 import toast from 'react-hot-toast';
 import client from '../api/client';
 import { useAuthStore } from '../store/auth';
-import type { ApiResponse, Classmate, SignActivity, CourseActivities, SignStatusMessage } from '../types';
+import type { ApiResponse, Classmate, SignActivity, CourseActivities, SignStatusMessage, SignCheckItem } from '../types';
 import config from '../../config.yaml';
 
 // Import refactored components
@@ -51,6 +51,7 @@ const SignDetail = () => {
   
   const [showProgress, setShowProgress] = useState(false);
   const [signStatuses, setSignStatuses] = useState<Record<number, Partial<SignStatusMessage>>>({});
+  const [classmateSignStates, setClassmateSignStates] = useState<Record<number, SignCheckItem>>({});
   
   const isExecutingRef = useRef(false);
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -85,6 +86,33 @@ const SignDetail = () => {
     });
   }, [classmates, currentUser]);
 
+  const getSignStateLabel = (source: number, name: string) => {
+    if (source === -1) return '学习通签到';
+    if (source === currentUser?.uid) return '本人签到';
+    return `${name}代签`;
+  };
+
+  const loadClassmateSignStates = async (students: Classmate[]) => {
+    if (!activity || students.length === 0) {
+      setClassmateSignStates({});
+      return;
+    }
+
+    const response = await client.post<ApiResponse<{ items: SignCheckItem[] }>>('/sign/check', {
+      activity_id: activity.active_id,
+      user_ids: students.map((student) => student.uid),
+    });
+
+    const nextStates = response.data.data.items.reduce<Record<number, SignCheckItem>>((acc, item) => {
+      if (item.user_id !== currentUser?.uid) {
+        acc[item.user_id] = item;
+      }
+      return acc;
+    }, {});
+
+    setClassmateSignStates(nextStates);
+  };
+
   useEffect(() => {
     if (!activity) {
       navigate('/');
@@ -98,6 +126,7 @@ const SignDetail = () => {
         const data = response.data.data || [];
         setClassmates(data);
         setSelectedUids(data.map(c => c.uid));
+        await loadClassmateSignStates(data);
       } catch (error: any) {
         toast.error(error.message || '获取同学列表失败');
       } finally {
@@ -145,7 +174,16 @@ const SignDetail = () => {
         user_ids: selectedUids
       });
 
-      const checkItems = checkResp.data.data.items;
+      const checkItems = checkResp.data.data.items as SignCheckItem[];
+      setClassmateSignStates(prev => {
+        const next = { ...prev };
+        checkItems.forEach(item => {
+          if (item.user_id !== currentUser?.uid) {
+            next[item.user_id] = item;
+          }
+        });
+        return next;
+      });
       const signedUids = new Set(checkItems.filter(item => item.signed).map(item => item.user_id));
       
       checkItems.forEach(item => {
@@ -199,6 +237,18 @@ const SignDetail = () => {
 
             const res = execResp.data.data;
             if (res.success || res.already_signed) {
+              if (uid !== currentUser?.uid) {
+                setClassmateSignStates(prev => ({
+                  ...prev,
+                  [uid]: {
+                    user_id: uid,
+                    signed: true,
+                    record_source: res.record_source,
+                    record_source_name: res.record_source_name,
+                    message: res.message || '已签到',
+                  },
+                }));
+              }
               setSignStatuses(prev => ({ ...prev, [uid]: { status: 'success', message: res.message || '签到成功' } }));
               return;
             }
@@ -360,7 +410,17 @@ const SignDetail = () => {
                     <div className={`w-11 h-11 rounded-xl flex items-center justify-center text-white font-bold text-lg transition-colors shrink-0 overflow-hidden ${selectedUids.includes(student.uid) ? 'bg-blue-600' : 'bg-slate-400'}`}>
                       {student.avatar ? <img src={student.avatar} referrerPolicy="no-referrer" className="w-full h-full object-cover" /> : student.name[0]}
                     </div>
-                    <div><p className="font-bold text-base text-slate-800 leading-tight mb-0.5">{student.name}</p><p className="text-xs text-slate-400 font-mono font-bold tracking-tighter">{student.mobile_masked}</p></div>
+                    <div>
+                      <div className="flex items-center gap-2 mb-0.5 min-w-0">
+                        <p className="font-bold text-base text-slate-800 leading-tight truncate">{student.name}</p>
+                        {classmateSignStates[student.uid]?.signed && (
+                          <span className="max-w-[140px] truncate text-[10px] px-1.5 py-0.5 rounded-md font-medium shrink-0 bg-green-100 text-green-700" title={getSignStateLabel(classmateSignStates[student.uid].record_source, classmateSignStates[student.uid].record_source_name)}>
+                            {getSignStateLabel(classmateSignStates[student.uid].record_source, classmateSignStates[student.uid].record_source_name)}
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-xs text-slate-400 font-mono font-bold tracking-tighter">{student.mobile_masked}</p>
+                    </div>
                   </div>
                   <div className={`transition-all shrink-0 ${selectedUids.includes(student.uid) ? 'text-blue-600' : 'text-slate-200'}`}>{selectedUids.includes(student.uid) ? <CheckCircle2 size={24} /> : <Circle size={24} />}</div>
                 </div>

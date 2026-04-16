@@ -84,3 +84,11 @@ export interface SignStatusMessage {
   attempt: number;
   message: string;
 }
+
+export interface SignCheckItem {
+  user_id: number;
+  signed: boolean;
+  record_source: number;
+  record_source_name: string;
+  message: string;
+}

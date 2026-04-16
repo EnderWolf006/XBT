@@ -25,12 +25,13 @@ client.interceptors.response.use(
     return response;
   },
   (error) => {
-    if (error.response?.data?.message) {
-      return Promise.reject(new Error(error.response.data.message));
-    }
     if (error.response?.status === 401) {
       useAuthStore.getState().logout();
       window.location.href = '/login';
+      return Promise.reject(new Error(error.response?.data?.message || '登录已失效，请重新登录'));
+    }
+    if (error.response?.data?.message) {
+      return Promise.reject(new Error(error.response.data.message));
     }
     return Promise.reject(error);
   }

@@ -186,7 +186,7 @@ func (c *Client) ensureSession(mobile, password string) (*Session, error) {
 	c.sessionMu.Lock()
 	s, ok := c.sessions[mobile]
 	c.sessionMu.Unlock()
-	if ok && time.Since(s.LastLoginAt) < 24*time.Hour {
+	if ok && s.Password == password && time.Since(s.LastLoginAt) < 24*time.Hour {
 		return s, nil
 	}
 	_, err := c.PreLogin(mobile, password)

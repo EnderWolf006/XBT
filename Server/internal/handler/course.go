@@ -1,6 +1,8 @@
 package handler
 
 import (
+	"strings"
+
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -58,6 +60,10 @@ func (h *CourseHandler) Sync(c *gin.Context) {
 	}
 	courses, err := h.xxt.GetCourses(user.Mobile, password)
 	if err != nil {
+		if isXXTAuthError(err) {
+			common.Fail(c, 401, "学习通登录已失效，请使用新密码重新登录")
+			return
+		}
 		common.Fail(c, 500, "sync courses failed: "+err.Error())
 		return
 	}
@@ -72,6 +78,14 @@ func (h *CourseHandler) Sync(c *gin.Context) {
 		_ = h.db.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "user_uid"}, {Name: "course_id"}, {Name: "class_id"}}, DoNothing: true}).Create(&uc).Error
 	}
 	common.Success(c, gin.H{"count": len(courses)})
+}
+
+func isXXTAuthError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.TrimSpace(err.Error())
+	return strings.Contains(msg, "账号或密码错误")
 }
 
 func (h *CourseHandler) UpdateSelection(c *gin.Context) {
