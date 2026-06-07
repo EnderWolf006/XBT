@@ -52,6 +52,7 @@ func main() {
 			authed.GET("/sign/classmates", signHandler.Classmates)
 			authed.POST("/sign/check", signHandler.Check)
 			authed.POST("/sign/execute", signHandler.Execute)
+			authed.POST("/sign/photo", signHandler.Photo)
 
 			admin := authed.Group("/admin")
 			admin.Use(middleware.AdminOnly())

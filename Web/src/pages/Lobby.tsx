@@ -12,6 +12,7 @@ import {
   Activity,
   QrCode,
   MapPin,
+  Camera,
   Fingerprint,
   BookOpen,
   CheckCircle2,
@@ -145,8 +146,12 @@ const Lobby = () => {
     }));
   };
 
-  const getSignTypeIcon = (type: number) => {
-    switch (type) {
+  const isPhotoActivity = (activity: CourseActivities['activities'][number]) => activity.sign_type === 0 && activity.if_photo;
+
+  const getSignTypeIcon = (activity: CourseActivities['activities'][number]) => {
+    if (isPhotoActivity(activity)) return <Camera size={18} />;
+
+    switch (activity.sign_type) {
       case 2: return <QrCode size={18} />;
       case 3: return <Fingerprint size={18} />;
       case 4: return <MapPin size={18} />;
@@ -155,8 +160,10 @@ const Lobby = () => {
     }
   };
 
-  const getSignTypeName = (type: number) => {
-    switch (type) {
+  const getSignTypeName = (activity: CourseActivities['activities'][number]) => {
+    if (isPhotoActivity(activity)) return '拍照';
+
+    switch (activity.sign_type) {
       case 2: return '二维码';
       case 3: return '手势';
       case 4: return '位置';
@@ -364,13 +371,13 @@ const Lobby = () => {
                                     <div className="flex items-center space-x-3 flex-1 min-w-0">
                                       <div className={`w-10 h-10 rounded-xl flex items-center justify-center shadow-sm flex-shrink-0 bg-white ${shouldHighlight ? 'text-purple-600' : 'text-blue-600'
                                         }`}>
-                                        {getSignTypeIcon(activity.sign_type)}
+                                        {getSignTypeIcon(activity)}
                                       </div>
                                       <div className="flex-1 min-w-0">
                                         <div className={`font-bold text-sm truncate text-slate-900`}>{activity.activity_name}</div>
                                         <div className="flex items-center space-x-2 mt-0.5 overflow-hidden">
                                           <span className={`text-[10px] px-1.5 py-0.5 bg-blue-100 text-blue-700 rounded-md font-medium uppercase flex-shrink-0`}>
-                                            {getSignTypeName(activity.sign_type)}
+                                            {getSignTypeName(activity)}
                                           </span>
                                           {shouldHighlight && (
                                             <span className="text-[10px] px-1.5 py-0.5 bg-purple-100 text-purple-700 rounded-md font-medium whitespace-nowrap flex-shrink-0">

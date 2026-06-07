@@ -7,6 +7,7 @@ import SignDetail from './pages/SignDetail';
 import Whitelist from './pages/Whitelist';
 import AccountManagement from './pages/AccountManagement';
 import FullScanner from './pages/FullScanner';
+import FullPhoto from './pages/FullPhoto';
 import ProtectedRoute from './components/ProtectedRoute';
 import { useEffect } from 'react';
 
@@ -62,6 +63,7 @@ function App() {
               <Route path="/admin/whitelist" element={<Whitelist />} />
               <Route path="/accounts" element={<AccountManagement />} />
               <Route path="/scanner" element={<FullScanner />} />
+              <Route path="/photo-capture" element={<FullPhoto />} />
             </Route>
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>

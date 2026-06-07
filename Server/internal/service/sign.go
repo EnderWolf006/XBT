@@ -32,6 +32,18 @@ type ExecuteSignRequest struct {
 	Special      map[string]interface{}
 }
 
+type ExecutePhotoSignRequest struct {
+	ActivityID   int64
+	TargetUID    int64
+	CourseID     int64
+	ClassID      int64
+	IfRefreshEWM bool
+	ObjectID     string
+	Filename     string
+	ContentType  string
+	Photo        []byte
+}
+
 type SignCheckItem struct {
 	UserID           int64  `json:"user_id"`
 	Signed           bool   `json:"signed"`
@@ -141,6 +153,57 @@ func (s *SignService) ExecuteOne(operatorUID int64, req ExecuteSignRequest) Sign
 		RecordSourceName: sourceName,
 		Message:          "签到成功",
 	}
+}
+
+func (s *SignService) ExecutePhoto(operatorUID int64, req ExecutePhotoSignRequest) SignExecuteResult {
+	if req.ActivityID <= 0 || req.CourseID <= 0 || req.ClassID <= 0 {
+		return SignExecuteResult{UserID: req.TargetUID, Success: false, Message: "签到参数不完整"}
+	}
+	if req.TargetUID <= 0 {
+		req.TargetUID = operatorUID
+	}
+	state := s.resolveSignState(req.ActivityID, req.TargetUID)
+	if state.Signed {
+		return SignExecuteResult{
+			UserID:           req.TargetUID,
+			Success:          true,
+			AlreadySigned:    true,
+			RecordSource:     state.RecordSource,
+			RecordSourceName: state.RecordSourceName,
+			Message:          state.Message,
+		}
+	}
+
+	objectID := strings.TrimSpace(req.ObjectID)
+	if objectID == "" {
+		if len(req.Photo) == 0 {
+			return SignExecuteResult{UserID: req.TargetUID, Success: false, Message: "请上传照片或传入 object_id"}
+		}
+		var target model.User
+		if err := s.db.Where("uid = ?", req.TargetUID).First(&target).Error; err != nil {
+			return SignExecuteResult{UserID: req.TargetUID, Success: false, Message: "该同学未登录或账号不可用"}
+		}
+		password, err := s.cc.Decrypt(target.CredentialCipher)
+		if err != nil {
+			return SignExecuteResult{UserID: req.TargetUID, Success: false, Message: "该同学登录信息已过期，请先重新登录"}
+		}
+		objectID, err = s.xxt.UploadPanFile(target.Mobile, password, req.Filename, req.ContentType, req.Photo)
+		if err != nil {
+			return SignExecuteResult{UserID: req.TargetUID, Success: false, Message: "照片上传失败：" + err.Error()}
+		}
+	}
+
+	return s.ExecuteOne(operatorUID, ExecuteSignRequest{
+		ActivityID:   req.ActivityID,
+		TargetUID:    req.TargetUID,
+		SignType:     xxt.SignNormal,
+		CourseID:     req.CourseID,
+		ClassID:      req.ClassID,
+		IfRefreshEWM: req.IfRefreshEWM,
+		Special: map[string]interface{}{
+			"object_id": objectID,
+		},
+	})
 }
 
 func (s *SignService) toUserSignMessage(raw string) string {

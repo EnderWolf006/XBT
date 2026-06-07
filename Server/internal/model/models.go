@@ -51,6 +51,7 @@ type SignActivity struct {
 	EndTime      int64     `gorm:"not null" json:"end_time"`
 	SignType     int       `gorm:"not null" json:"sign_type"`
 	IfRefreshEWM bool      `gorm:"not null;default:false" json:"if_refresh_ewm"`
+	IfPhoto      bool      `gorm:"not null;default:false" json:"if_photo"`
 	CreatedAt    time.Time `json:"-"`
 	UpdatedAt    time.Time `json:"-"`
 }

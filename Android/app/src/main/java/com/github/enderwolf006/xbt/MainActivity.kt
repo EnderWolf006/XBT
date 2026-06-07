@@ -122,6 +122,7 @@ private class NativeCameraPunchController(
 ) {
     private var cameraProvider: ProcessCameraProvider? = null
     private var camera: Camera? = null
+    private var imageCapture: androidx.camera.core.ImageCapture? = null
     private var isScannerActive = false
     private var requestedFacing = CameraSelector.LENS_FACING_BACK
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -188,6 +189,11 @@ private class NativeCameraPunchController(
         val preview = Preview.Builder().build().also {
             it.surfaceProvider = previewView.surfaceProvider
         }
+        val capture = androidx.camera.core.ImageCapture.Builder()
+            .setCaptureMode(androidx.camera.core.ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
+            .build()
+        imageCapture = capture
+
         val analysis = ImageAnalysis.Builder()
             .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
             .build()
@@ -199,7 +205,7 @@ private class NativeCameraPunchController(
 
         runCatching {
             provider.unbindAll()
-            camera = provider.bindToLifecycle(lifecycleOwner, selector, preview, analysis)
+            camera = provider.bindToLifecycle(lifecycleOwner, selector, preview, capture, analysis)
             previewView.visibility = View.VISIBLE
             emitCameraState(true, null)
         }.onFailure {
@@ -307,6 +313,53 @@ private class NativeCameraPunchController(
         }
     }
 
+    private fun takePhoto() {
+        val capture = imageCapture ?: return
+        capture.takePicture(
+            ContextCompat.getMainExecutor(context),
+            object : androidx.camera.core.ImageCapture.OnImageCapturedCallback() {
+                override fun onCaptureSuccess(image: ImageProxy) {
+                    val bitmap = imageProxyToBitmap(image)
+                    val base64 = bitmapToBase64(bitmap)
+                    image.close()
+                    emitPhoto(base64)
+                }
+
+                override fun onError(exception: androidx.camera.core.ImageCaptureException) {
+                    // handle error
+                }
+            }
+        )
+    }
+
+    private fun imageProxyToBitmap(image: ImageProxy): android.graphics.Bitmap {
+        val buffer = image.planes[0].buffer
+        val bytes = ByteArray(buffer.remaining())
+        buffer.get(bytes)
+        val bitmap = android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+        val matrix = android.graphics.Matrix()
+        matrix.postRotate(image.imageInfo.rotationDegrees.toFloat())
+        return android.graphics.Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
+    }
+
+    private fun bitmapToBase64(bitmap: android.graphics.Bitmap): String {
+        val outputStream = java.io.ByteArrayOutputStream()
+        bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 85, outputStream)
+        val bytes = outputStream.toByteArray()
+        return android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
+    }
+
+    private fun emitPhoto(base64: String) {
+        val js = """
+            (function() {
+                window.dispatchEvent(new CustomEvent('xbt-native-photo', { detail: { base64: 'data:image/jpeg;base64,$base64' } }));
+            })();
+        """.trimIndent()
+        webView.post {
+            webView.evaluateJavascript(js, null)
+        }
+    }
+
     private inner class JsBridge {
         @JavascriptInterface
         fun isReady(): Boolean = true
@@ -329,6 +382,11 @@ private class NativeCameraPunchController(
         @JavascriptInterface
         fun setLensFacing(mode: String?) {
             webView.post { this@NativeCameraPunchController.setLensFacing(mode) }
+        }
+
+        @JavascriptInterface
+        fun takePhoto() {
+            webView.post { this@NativeCameraPunchController.takePhoto() }
         }
 
         @JavascriptInterface

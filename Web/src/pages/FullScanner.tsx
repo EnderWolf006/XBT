@@ -482,10 +482,49 @@ const FullScanner = () => {
     window.addEventListener('resize', syncReaderPunchHole);
     window.addEventListener('scroll', syncReaderPunchHole, { passive: true });
 
+    // 缩放
+    let lastTouchDist = 0;
+    const getTouchDist = (touches: TouchList) => {
+      return Math.hypot(
+        touches[0].clientX - touches[1].clientX,
+        touches[0].clientY - touches[1].clientY
+      );
+    };
+
+    const handleTouchStartNative = (e: TouchEvent) => {
+      if (e.touches.length === 2) {
+        lastTouchDist = getTouchDist(e.touches);
+      }
+    };
+
+    const handleTouchMoveNative = (e: TouchEvent) => {
+      if (e.touches.length === 2 && lastTouchDist > 0) {
+        const currentDistance = getTouchDist(e.touches);
+        const delta = (currentDistance - lastTouchDist) * 0.01;
+        
+        const bridge = getNativeBridge();
+        if (bridge && typeof bridge.zoomByPinchDelta === 'function') {
+          bridge.zoomByPinchDelta(delta);
+        }
+        lastTouchDist = currentDistance;
+      }
+    };
+
+    const handleTouchEndNative = () => {
+      lastTouchDist = 0;
+    };
+
+    reader.addEventListener('touchstart', handleTouchStartNative, { passive: true });
+    reader.addEventListener('touchmove', handleTouchMoveNative, { passive: true });
+    reader.addEventListener('touchend', handleTouchEndNative, { passive: true });
+
     return () => {
       observer.disconnect();
       window.removeEventListener('resize', syncReaderPunchHole);
       window.removeEventListener('scroll', syncReaderPunchHole);
+      reader.removeEventListener('touchstart', handleTouchStartNative);
+      reader.removeEventListener('touchmove', handleTouchMoveNative);
+      reader.removeEventListener('touchend', handleTouchEndNative);
     };
   }, [isCameraReady]);
 

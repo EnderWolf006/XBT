@@ -1,6 +1,7 @@
 package xxt
 
 import (
+	"bytes"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
@@ -8,8 +9,10 @@ import (
 	_ "image/png"
 	"io"
 	"log"
+	"mime/multipart"
 	"net/http"
 	"net/http/cookiejar"
+	"net/textproto"
 	"net/url"
 	"regexp"
 	"strconv"
@@ -71,6 +74,7 @@ type SignDetail struct {
 	EndTime      int64
 	SignType     int
 	IfRefreshEWM bool
+	IfPhoto      bool
 }
 
 type FixedParams struct {
@@ -372,6 +376,7 @@ func (c *Client) GetSignDetail(mobile, password string, activityID int64) (SignD
 		EndTime:      end,
 		SignType:     int(int64FromAny(payload["otherId"])),
 		IfRefreshEWM: boolFromAny(payload["ifRefreshEwm"]),
+		IfPhoto:      boolFromAny(deepFindFirst(payload, "ifphoto", "ifPhoto")),
 	}, nil
 }
 
@@ -432,6 +437,108 @@ func (c *Client) PreSign(mobile, password string, fixed FixedParams, code, enc s
 	return nil
 }
 
+func (c *Client) GetPanUploadToken(mobile, password string) (string, error) {
+	s, err := c.ensureSession(mobile, password)
+	if err != nil {
+		return "", err
+	}
+	cli := *c.http
+	cli.Jar = s.Jar
+
+	req, _ := http.NewRequest(http.MethodGet, "https://pan-yz.chaoxing.com/api/token/uservalid", nil)
+	req.Header.Set("User-Agent", c.mobileUA)
+	resp, err := cli.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+
+	var payload interface{}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return "", fmt.Errorf("pan token decode failed: %w", err)
+	}
+	token := strings.TrimSpace(strVal(deepFindFirst(payload, "_token", "token")))
+	if token == "" {
+		return "", fmt.Errorf("pan token missing: %s", truncateForLog(string(body), 200))
+	}
+	return token, nil
+}
+
+func (c *Client) UploadPanFile(mobile, password, filename, contentType string, data []byte) (string, error) {
+	if len(data) == 0 {
+		return "", fmt.Errorf("photo file is empty")
+	}
+	s, err := c.ensureSession(mobile, password)
+	if err != nil {
+		return "", err
+	}
+	token, err := c.GetPanUploadToken(mobile, password)
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(filename) == "" {
+		filename = "photo.jpg"
+	}
+	filename = sanitizeMultipartFilename(filename)
+	if strings.TrimSpace(contentType) == "" {
+		contentType = "application/octet-stream"
+	}
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	partHeader := textproto.MIMEHeader{}
+	partHeader.Set("Content-Disposition", fmt.Sprintf(`form-data; name="file"; filename="%s"`, escapeMultipartFilename(filename)))
+	partHeader.Set("Content-Type", contentType)
+	part, err := writer.CreatePart(partHeader)
+	if err != nil {
+		return "", err
+	}
+	if _, err := part.Write(data); err != nil {
+		return "", err
+	}
+	if err := writer.WriteField("puid", strconv.FormatInt(s.UID, 10)); err != nil {
+		return "", err
+	}
+	if err := writer.Close(); err != nil {
+		return "", err
+	}
+
+	cli := *c.http
+	cli.Jar = s.Jar
+	uploadURL := "https://pan-yz.chaoxing.com/upload?_from=mobilelearn&_token=" + url.QueryEscape(token)
+	req, _ := http.NewRequest(http.MethodPost, uploadURL, &body)
+	req.Header.Set("User-Agent", c.mobileUA)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	resp, err := cli.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", fmt.Errorf("pan upload failed: http %d %s", resp.StatusCode, truncateForLog(string(respBody), 200))
+	}
+
+	var payload interface{}
+	if err := json.Unmarshal(respBody, &payload); err != nil {
+		return "", fmt.Errorf("pan upload decode failed: %w", err)
+	}
+	objectID := strings.TrimSpace(strVal(deepFindFirst(payload, "objectId", "objectid")))
+	if objectID == "" {
+		return "", fmt.Errorf("pan upload objectId missing: %s", truncateForLog(string(respBody), 200))
+	}
+	return objectID, nil
+}
+
+func (c *Client) SignPhoto(mobile, password string, fixed FixedParams, objectID string) (string, error) {
+	objectID = strings.TrimSpace(objectID)
+	if objectID == "" {
+		return "", fmt.Errorf("missing photo object_id")
+	}
+	return c.Sign(mobile, password, fixed, SignNormal, map[string]interface{}{"object_id": objectID})
+}
+
 func (c *Client) Sign(mobile, password string, fixed FixedParams, signType int, special map[string]interface{}) (string, error) {
 	s, err := c.ensureSession(mobile, password)
 	if err != nil {
@@ -447,6 +554,13 @@ func (c *Client) Sign(mobile, password string, fixed FixedParams, signType int, 
 	params.Set("appType", "15")
 	params.Set("fid", "")
 	params.Set("name", s.Name)
+	if objectID := strings.TrimSpace(strVal(firstNonNil(special["object_id"], special["objectId"]))); objectID != "" {
+		params.Set("objectId", objectID)
+		params.Set("useragent", "")
+		params.Set("latitude", "-1")
+		params.Set("longitude", "-1")
+		return c.doStuSignRequest(&cli, params)
+	}
 	// 先空 validate 发起一次请求；仅在学习通明确要求时再走验证码。
 	params.Set("validate", "")
 
@@ -547,6 +661,21 @@ func (c *Client) doStuSignRequest(cli *http.Client, params url.Values) (string, 
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 	return strings.TrimSpace(string(body)), nil
+}
+
+func sanitizeMultipartFilename(filename string) string {
+	filename = strings.TrimSpace(filename)
+	if filename == "" {
+		return "photo.jpg"
+	}
+	filename = strings.ReplaceAll(filename, "\\", "_")
+	filename = strings.ReplaceAll(filename, "/", "_")
+	filename = strings.ReplaceAll(filename, "\x00", "")
+	return filename
+}
+
+func escapeMultipartFilename(filename string) string {
+	return strings.NewReplacer("\\", "\\\\", `"`, "\\\"").Replace(filename)
 }
 
 func buildQRCodeLocationParam(special map[string]interface{}) (string, bool) {

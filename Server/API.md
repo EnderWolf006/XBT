@@ -182,6 +182,7 @@ Authorization: Bearer <JWT>
         "end_time": 1760003600000,
         "sign_type": 2,
         "if_refresh_ewm": false,
+        "if_photo": false,
         "record_source": 0,
         "record_source_name": "",
         "record_sign_time": 1760000500000,
@@ -212,6 +213,8 @@ Authorization: Bearer <JWT>
 - `3` 手势签到
 - `4` 位置签到
 - `5` 签到码签到
+
+说明：当 `sign_type=0` 且 `if_photo=true` 时，该活动为拍照签到，应调用 `/api/sign/photo`。
 
 说明：
 - 每门课程默认最多返回最新 `5` 条签到活动（可通过后端 `Server/config.yaml` 中的 `activity_list_limit` 配置）。
@@ -344,6 +347,38 @@ GET /api/sign/classmates?course_id=222&class_id=111
   - `description` (required)
 - 签到码签到(`5`):
   - `sign_code` (required)
+
+### 5.5 拍照签到
+- Method: `POST`
+- Path: `/api/sign/photo`
+- Auth: 是
+- Content-Type: `multipart/form-data`
+
+请求字段：
+- `activity_id` (required): 签到活动 ID
+- `course_id` (required): 课程 ID
+- `class_id` (required): 班级 ID
+- `target_uid` (optional): 代签目标用户；不传则默认当前登录用户
+- `if_refresh_ewm` (optional): 与活动详情中的 `if_refresh_ewm` 一致
+- `file` (optional): 照片文件，字段名固定为 `file`，最大 20MB
+- `object_id` (optional): 已上传到超星云盘的图片 `objectId`；传了 `object_id` 时可以不传 `file`
+
+说明：
+- 后端会使用目标用户的学习通登录凭据上传照片到超星云盘，获取 `objectId` 后再提交拍照签到。
+- 如果你已经有图片 `objectId`，可以直接传 `object_id`，后端会跳过上传步骤。
+- 响应体与 `/api/sign/execute` 一致。
+
+示例：
+
+```bash
+curl -X POST http://localhost:3030/api/sign/photo \
+  -H "Authorization: Bearer <JWT>" \
+  -F "activity_id=987654" \
+  -F "course_id=222" \
+  -F "class_id=111" \
+  -F "target_uid=10001" \
+  -F "file=@photo.jpg"
+```
 
 ---
 
