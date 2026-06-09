@@ -3,7 +3,6 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { ChevronLeft, Camera, EyeOff, Eye, Loader2 } from 'lucide-react';
 import toast from 'react-hot-toast';
-import { useAuthStore } from '../store/auth';
 
 type NativeCameraBridge = {
   isReady?: () => boolean;
@@ -32,7 +31,6 @@ const getFriendlyCameraLabel = (label: string, index: number) => {
 const FullPhoto = () => {
   const navigate = useNavigate();
   const location = useLocation();
-  const { user: currentUser } = useAuthStore();
   
   const { activity, existingPhotos } = location.state || {};
 
