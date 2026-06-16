@@ -559,7 +559,6 @@ func (c *Client) Sign(mobile, password string, fixed FixedParams, signType int, 
 		params.Set("useragent", "")
 		params.Set("latitude", "-1")
 		params.Set("longitude", "-1")
-		return c.doStuSignRequest(&cli, params)
 	}
 	// 先空 validate 发起一次请求；仅在学习通明确要求时再走验证码。
 	params.Set("validate", "")
