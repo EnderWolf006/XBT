@@ -1,17 +1,16 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useEffectEvent, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ChevronLeft, Camera, EyeOff, Eye, MapPin, CheckCircle2 } from 'lucide-react';
+import { ChevronLeft, Camera, EyeOff, Eye, MapPin, CheckCircle2, LocateOff, ScanFace } from 'lucide-react';
 import { Html5Qrcode, type CameraDevice } from 'html5-qrcode';
 import toast from 'react-hot-toast';
-import client from '../api/client';
+import client, { LONG_REQUEST_TIMEOUT } from '../api/client';
 import { useAuthStore } from '../store/auth';
 import { ProgressCard } from '../components/sign/ProgressCard';
-import type { ApiResponse, SignStatusMessage, Classmate, User } from '../types';
+import type { ApiResponse, SignStatusMessage, Classmate, User, SignCheckItem, SignExecuteResult, SignLocation } from '../types';
+import { getErrorMessage, isCancellationError } from '../utils/errors';
 import scanCursor from '../assets/scan_cursor.png';
-import config from '../../config.yaml';
-
-const LOCATION_PRESETS = config.sign?.location_presets || [];
+import LocationDialog from '../components/LocationDialog';
 
 interface QrData {
   enc: string;
@@ -69,21 +68,35 @@ const FullScanner = () => {
     }
   }, [isCameraReady]);
 
-  const [lat, setLat] = useState('');
-  const [lng, setLng] = useState('');
-  const [locationStr, setLocationStr] = useState('');
+  const [selectedLocation, setSelectedLocation] = useState<SignLocation | null>(null);
+  const [signLocations, setSignLocations] = useState<SignLocation[]>([]);
+  const [locationLoading, setLocationLoading] = useState(false);
+  const [locationError, setLocationError] = useState('');
   const [isLocationPickerOpen, setIsLocationPickerOpen] = useState(false);
 
-  const latRef = useRef('');
-  const lngRef = useRef('');
-  const locationStrRef = useRef('');
+  const selectedLocationRef = useRef<SignLocation | null>(null);
   const lastScanTimeRef = useRef<number>(0);
 
   useEffect(() => {
-    latRef.current = lat;
-    lngRef.current = lng;
-    locationStrRef.current = locationStr;
-  }, [lat, lng, locationStr]);
+    selectedLocationRef.current = selectedLocation;
+  }, [selectedLocation]);
+
+  const loadSignLocations = useCallback(async () => {
+    setLocationLoading(true);
+    setLocationError('');
+    try {
+      const response = await client.get<ApiResponse<SignLocation[]>>('/sign/locations');
+      setSignLocations(response.data.data ?? []);
+    } catch (error) {
+      setLocationError(getErrorMessage(error, '获取个人常用地点失败，请重试'));
+    } finally {
+      setLocationLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (isLocationPickerOpen) void loadSignLocations();
+  }, [isLocationPickerOpen, loadSignLocations]);
   
   useEffect(() => {
     const handleFullScreen = async () => {
@@ -145,7 +158,22 @@ const FullScanner = () => {
   const latestQrDataRef = useRef<QrData | null>(null);
   const isExecutingRef = useRef(false);
   const abortControllerRef = useRef<AbortController | null>(null);
-  const scanSuccessHandlerRef = useRef<(decodedText: string) => void>(() => {});
+
+  // 二维码签到同样可能叠加人脸验证，扫码前必须先采集本人照片。
+  const requiresPhoto = !!activity?.if_photo;
+  const [facePhotos, setFacePhotos] = useState<File[]>([]);
+  const [facePreviews, setFacePreviews] = useState<string[]>([]);
+  const photoObjectIDCache = useRef<Map<File, string>>(new Map());
+
+  useEffect(() => {
+    const returned = location.state?.returnedPhotos as File[] | undefined;
+    if (returned && returned.length > 0) {
+      setFacePhotos(prev => [...prev, ...returned]);
+      setFacePreviews(prev => [...prev, ...returned.map(file => URL.createObjectURL(file))]);
+      window.history.replaceState({ ...location.state, returnedPhotos: undefined }, '');
+      toast.success('人脸照片已采集，请扫描老师展示的二维码');
+    }
+  }, [location.state]);
 
   const getNativeBridge = (): NativeCameraBridge | null => {
     const bridge = (window as WindowWithBridge).XBTCameraBridge;
@@ -158,22 +186,22 @@ const FullScanner = () => {
     return bridge;
   };
 
-  const syncReaderPunchHole = () => {
+  const syncReaderPunchHole = useCallback(() => {
     const bridge = getNativeBridge();
     const reader = readerRef.current;
     if (!bridge || !reader || typeof bridge.syncPunchHole !== 'function') return;
     const rect = reader.getBoundingClientRect();
     bridge.syncPunchHole(rect.left, rect.top, rect.width, rect.height);
-  };
+  }, []);
 
-  const setNativeLensFacing = (deviceId: string | null) => {
+  const setNativeLensFacing = useCallback((deviceId: string | null) => {
     const bridge = getNativeBridge();
     if (!bridge || typeof bridge.setLensFacing !== 'function' || !deviceId) return;
     const selected = cameras.find((c) => c.id === deviceId);
     const label = selected?.label?.toLowerCase() ?? '';
     const facing: 'user' | 'environment' = /front|user|前置|自拍/.test(label) ? 'user' : 'environment';
     bridge.setLensFacing(facing);
-  };
+  }, [cameras]);
 
   const orderedTargetUids = [currentUser?.uid, ...(selectedUids || [])].filter(Boolean) as number[];
 
@@ -195,7 +223,7 @@ const FullScanner = () => {
 
   useEffect(() => {
     setNativeLensFacing(selectedDeviceId);
-  }, [selectedDeviceId, cameras]);
+  }, [selectedDeviceId, setNativeLensFacing]);
 
   useEffect(() => {
     if (!activity) return;
@@ -231,7 +259,7 @@ const FullScanner = () => {
       const bridge = getNativeBridge();
       bridge?.setScannerActive?.(false);
     };
-  }, [activity]);
+  }, [activity, setNativeLensFacing]);
 
   useEffect(() => {
     return () => {
@@ -250,7 +278,7 @@ const FullScanner = () => {
   };
 
   useEffect(() => {
-    if (isNativeBridgeModeRef.current) {
+    if (getNativeBridge()) {
       setSelectedDeviceId('__native_environment__');
       setCameras([
         { id: '__native_environment__', label: '后置摄像头' } as CameraDevice,
@@ -383,13 +411,13 @@ const FullScanner = () => {
       if (!activity) navigate('/');
       return;
     }
-    if (!selectedDeviceId && !isNativeBridgeModeRef.current) return;
+    const deviceId = scannerSessionKey === '__native__' ? null : scannerSessionKey;
+    if (!deviceId && !isNativeBridgeModeRef.current) return;
 
     const bridge = getNativeBridge();
     if (bridge) {
       setNativePreviewReady(false);
       setIsCameraReady(false);
-      setNativeLensFacing(selectedDeviceId);
     }
 
     let isMounted = true;
@@ -411,39 +439,42 @@ const FullScanner = () => {
             syncReaderPunchHole();
             return;
           }
-          if (!selectedDeviceId) return;
+          if (!deviceId) return;
 
           const html5QrCode = new Html5Qrcode("reader");
           activeScannerRef.current = html5QrCode;
 
           await html5QrCode.start(
-            selectedDeviceId,
+            deviceId,
             {
               fps: 30,
               aspectRatio: 1.777778,
               videoConstraints: {
-                deviceId: { exact: selectedDeviceId },
+                deviceId: { exact: deviceId },
                 width: { ideal: 1280 },
                 height: { ideal: 720 },
-                advanced: [{ focusMode: "continuous" } as any]
+                advanced: [{ focusMode: "continuous" }]
               }
             },
-            onScanSuccess,
-            onScanFailure
+            text => onScanSuccess(text),
+            () => {}
           );
           
           setIsCameraReady(true);
           
-          if ('BarcodeDetector' in window) {
-            const detector = new (window as any).BarcodeDetector({ formats: ['qr_code'] });
-            const videoElement = document.querySelector("#reader video") as HTMLVideoElement;
+          if (window.BarcodeDetector) {
+            const detector = new window.BarcodeDetector({ formats: ['qr_code'] });
+            const videoElement = document.querySelector<HTMLVideoElement>("#reader video");
             const nativeScanLoop = async () => {
               if (!isMounted || !activeScannerRef.current) return;
               if (videoElement && videoElement.readyState >= 2) {
                 try {
                   const barcodes = await detector.detect(videoElement);
                   if (barcodes.length > 0) onScanSuccess(barcodes[0].rawValue);
-                } catch (e) {}
+                } catch (error) {
+                  console.warn('浏览器二维码检测失败，继续使用主扫描器', error);
+                  return;
+                }
               }
               requestAnimationFrame(nativeScanLoop);
             };
@@ -462,14 +493,18 @@ const FullScanner = () => {
       transitionPromise.current = transitionPromise.current.then(async () => {
         if (activeScannerRef.current) {
           const scanner = activeScannerRef.current;
-          try { if (scanner.isScanning) await scanner.stop(); } catch (e) {}
+          try {
+            if (scanner.isScanning) await scanner.stop();
+          } catch (error) {
+            console.warn('停止二维码扫描器失败', error);
+          }
           activeScannerRef.current = null;
           const container = document.getElementById("reader");
           if (container) container.innerHTML = "";
         }
       });
     };
-  }, [activity, navigate, scannerSessionKey]);
+  }, [activity, navigate, scannerSessionKey, syncReaderPunchHole]);
 
   useEffect(() => {
     if (!isNativeBridgeModeRef.current) return;
@@ -526,7 +561,7 @@ const FullScanner = () => {
       reader.removeEventListener('touchmove', handleTouchMoveNative);
       reader.removeEventListener('touchend', handleTouchEndNative);
     };
-  }, [isCameraReady]);
+  }, [isCameraReady, syncReaderPunchHole]);
 
   useEffect(() => {
     if (!isNativeBridgeMode) return;
@@ -534,7 +569,7 @@ const FullScanner = () => {
       const customEvent = event as CustomEvent<{ text?: string }>;
       const text = customEvent.detail?.text;
       if (typeof text === 'string' && text.length > 0) {
-        scanSuccessHandlerRef.current(text);
+        onScanSuccess(text);
       }
     };
     window.addEventListener('xbt-native-qr', onNativeQr);
@@ -550,7 +585,7 @@ const FullScanner = () => {
       const enc = url.searchParams.get('enc');
       const c = url.searchParams.get('c');
       if (enc) return { enc, c: c || '', timestamp: Date.now() };
-    } catch (e) {
+    } catch {
       const encMatch = text.match(/[?&]enc=([^&]+)/);
       const cMatch = text.match(/[?&]c=([^&]+)/);
       if (encMatch) return { enc: encMatch[1], c: cMatch ? cMatch[1] : '', timestamp: Date.now() };
@@ -560,21 +595,33 @@ const FullScanner = () => {
 
   const handleExecute = async (initialQr: QrData) => {
     if (isExecutingRef.current) return;
+    if (activity?.need_face) {
+      toast.error('该签到要求学习通 App 活体人脸验证，网页无法代签，请用学习通 App 扫码签到');
+      return;
+    }
+    if ((activity?.sign_type === 4 || activity?.if_get_range) && !selectedLocationRef.current) {
+      toast.error('该签到要求位置验证，请先选择签到地点');
+      return;
+    }
+    if (requiresPhoto && facePhotos.length === 0) {
+      toast.error('该签到要求人脸验证，请先点左下角「人脸」拍摄本人正脸');
+      return;
+    }
     setIsExecuting(true);
     isExecutingRef.current = true;
     abortControllerRef.current = new AbortController();
     
-    const initialStatuses: Record<number, any> = {};
+    const initialStatuses: Record<number, Partial<SignStatusMessage>> = {};
     orderedTargetUids.forEach(uid => initialStatuses[uid] = { status: 'pending', message: '等待中' });
     setSignStatuses(initialStatuses);
 
     try {
       // 1. Check current sign status first
-      const checkResp = await client.post<ApiResponse<{ items: any[] }>>('/sign/check', {
+      const checkResp = await client.post<ApiResponse<{ items: SignCheckItem[] }>>('/sign/check', {
         activity_id: activity.active_id,
         user_ids: orderedTargetUids
       }, {
-        signal: abortControllerRef.current?.signal
+        signal: abortControllerRef.current?.signal, timeout: LONG_REQUEST_TIMEOUT,
       });
 
       const checkItems = checkResp.data.data.items;
@@ -588,6 +635,23 @@ const FullScanner = () => {
 
       const toSignUids = orderedTargetUids.filter(uid => !signedUids.has(uid));
       if (toSignUids.length === 0) return;
+
+      // 人脸验证：整轮只上传一次照片换 object_id，所有目标共用同一个已采集人脸。
+      let faceObjectID = '';
+      if (requiresPhoto) {
+        const faceFile = facePhotos[0];
+        faceObjectID = photoObjectIDCache.current.get(faceFile) || '';
+        if (!faceObjectID) {
+          const formData = new FormData();
+          formData.append('file', faceFile);
+          const uploadResp = await client.post<ApiResponse<{ object_id: string }>>('/sign/photo/upload', formData, {
+            signal: abortControllerRef.current?.signal, timeout: LONG_REQUEST_TIMEOUT,
+          });
+          faceObjectID = uploadResp.data.data?.object_id || '';
+          if (!faceObjectID) throw new Error('人脸照片上传失败，请重试');
+          photoObjectIDCache.current.set(faceFile, faceObjectID);
+        }
+      }
 
       // 2. Concurrent execution with Retry Logic
       await Promise.all(toSignUids.map(async (uid) => {
@@ -607,18 +671,16 @@ const FullScanner = () => {
             } 
           }));
           try {
-            const special_params: Record<string, any> = { enc: currentQr.enc, c: currentQr.c };
-            if (latRef.current && lngRef.current) {
-              special_params.latitude = latRef.current;
-              special_params.longitude = lngRef.current;
-              special_params.description = locationStrRef.current;
-            }
-            const execResp = await client.post<ApiResponse<any>>('/sign/execute', {
+            const special_params: Record<string, unknown> = { enc: currentQr.enc, c: currentQr.c };
+            if (faceObjectID) special_params.object_id = faceObjectID;
+            const execResp = await client.post<ApiResponse<SignExecuteResult>>('/sign/execute', {
               activity_id: activity.active_id, target_uid: uid, sign_type: 2,
               course_id: activity.course_id, class_id: activity.class_id, if_refresh_ewm: activity.if_refresh_ewm,
+              require_range: !!activity.if_get_range,
+              location_id: selectedLocationRef.current?.id,
               special_params
             }, {
-              signal: abortControllerRef.current?.signal
+              signal: abortControllerRef.current?.signal, timeout: LONG_REQUEST_TIMEOUT,
             });
             const res = execResp.data.data;
             if (res.success || res.already_signed) {
@@ -627,9 +689,9 @@ const FullScanner = () => {
             }
             lastError = res.message || '失败';
             setSignStatuses(prev => ({ ...prev, [uid]: { ...prev[uid], message: lastError } }));
-          } catch (err: any) { 
-            if (err.name === 'CanceledError' || err.name === 'AbortError') return;
-            lastError = err.message || '异常'; 
+          } catch (err) { 
+            if (isCancellationError(err)) return;
+            lastError = getErrorMessage(err, '异常'); 
             setSignStatuses(prev => ({ ...prev, [uid]: { ...prev[uid], message: lastError } }));
           }
           if (attempt < MAX_RETRIES) {
@@ -641,16 +703,16 @@ const FullScanner = () => {
           } else setSignStatuses(prev => ({ ...prev, [uid]: { status: 'failed', message: lastError } }));
         }
       }));
-    } catch (error: any) {
-      if (error.name !== 'CanceledError' && error.name !== 'AbortError') {
-        toast.error(error.message || '执行过程出错');
+    } catch (error) {
+      if (!isCancellationError(error)) {
+        toast.error(getErrorMessage(error, '执行过程出错'));
       }
     } finally {
       abortControllerRef.current = null;
     }
   };
 
-  const onScanSuccess = (decodedText: string) => {
+  const onScanSuccess = useEffectEvent((decodedText: string) => {
     const now = Date.now();
     if (isExecuting || isExecutingRef.current || (now - lastScanTimeRef.current < 2000)) return;
 
@@ -660,13 +722,7 @@ const FullScanner = () => {
       if (!latestQrDataRef.current || latestQrDataRef.current.enc !== qr.enc) setLatestQrData(qr);
       handleExecute(qr);
     }
-  };
-
-  useEffect(() => {
-    scanSuccessHandlerRef.current = onScanSuccess;
-  }, [onScanSuccess]);
-
-  const onScanFailure = () => {};
+  });
 
   const onTouchStart = (e: React.TouchEvent) => {
     // 如果上一轮被三指打断，新的触摸序列自动解锁，避免永久失效
@@ -725,12 +781,12 @@ const FullScanner = () => {
         const track = stream?.getVideoTracks()[0];
 
         if (!track) return;
-        const capabilities = track.getCapabilities() as any;
+        const capabilities = track.getCapabilities();
         if (!capabilities.zoom) return;
 
         let newZoom = currentZoom.current + zoomStep;
         newZoom = Math.max(capabilities.zoom.min, Math.min(capabilities.zoom.max, newZoom));
-        await track.applyConstraints({ advanced: [{ zoom: newZoom } as any] });
+        await track.applyConstraints({ advanced: [{ zoom: newZoom }] });
         currentZoom.current = newZoom;
         setDisplayZoom(newZoom);
         setShowZoomOverlay(true);
@@ -964,16 +1020,46 @@ const FullScanner = () => {
                   exit={{ x: -120, opacity: 0 }}
                   transition={{ ease: "easeInOut", duration: 0.3, delay: 0.1 }}
                   type="button" 
-                  onClick={() => setIsLocationPickerOpen(true)} 
+                  aria-label="选择扫码签到位置" onClick={() => setIsLocationPickerOpen(true)} 
                   className="flex flex-col items-center space-y-2 group pointer-events-auto active:scale-95 transition-transform"
                 >
-                  <div className={`w-14 h-14 rounded-full flex items-center justify-center backdrop-blur-md border border-white/10 shadow-lg transition-colors ${lat ? 'bg-blue-600 text-white' : 'bg-black/40 text-white'}`}>
+                  <div className={`w-14 h-14 rounded-full flex items-center justify-center backdrop-blur-md border border-white/10 shadow-lg transition-colors ${selectedLocation ? 'bg-blue-600 text-white' : 'bg-black/40 text-white'}`}>
                     <MapPin size={22} />
                   </div>
                   <span className="text-[10px] text-white/80 font-bold tracking-wider truncate max-w-[60px]">
-                    {lat ? LOCATION_PRESETS.find((p: any) => p.lat === lat)?.name || "位置" : "位置"}
+                    {selectedLocation?.name || "位置"}
                   </span>
                 </motion.button>
+
+                {requiresPhoto && (
+                  <motion.button
+                    initial={{ x: -120, opacity: 0 }}
+                    animate={{ x: 0, opacity: 1 }}
+                    exit={{ x: -120, opacity: 0 }}
+                    transition={{ ease: "easeInOut", duration: 0.2 }}
+                    type="button"
+                    aria-label="人脸验证拍照"
+                    onClick={() => navigate('/photo-capture', {
+                      state: {
+                        ...location.state,
+                        activity,
+                        course: location.state?.course,
+                        existingPhotos: facePhotos,
+                        returnTo: '/scanner',
+                      },
+                    })}
+                    className="flex flex-col items-center space-y-2 group pointer-events-auto active:scale-95 transition-transform"
+                  >
+                    <div className={`w-14 h-14 rounded-full flex items-center justify-center backdrop-blur-md border border-white/10 shadow-lg overflow-hidden transition-colors ${facePhotos.length > 0 ? 'bg-emerald-600 text-white' : 'bg-black/40 text-white'}`}>
+                      {facePhotos.length > 0 && facePreviews[0]
+                        ? <img src={facePreviews[0]} alt="已采集人脸" className="w-full h-full object-cover" />
+                        : <ScanFace size={22} />}
+                    </div>
+                    <span className="text-[10px] text-white/80 font-bold tracking-wider">
+                      {facePhotos.length > 0 ? '已采集' : '人脸'}
+                    </span>
+                  </motion.button>
+                )}
 
                 <motion.button 
                   initial={{ x: -120, opacity: 0 }}
@@ -999,34 +1085,35 @@ const FullScanner = () => {
 
       <AnimatePresence>
         {isLocationPickerOpen && (
-          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-[150] flex items-end justify-center bg-slate-900/60 backdrop-blur-md p-0" onClick={() => setIsLocationPickerOpen(false)}>
-            <motion.div initial={{ y: '100%' }} animate={{ y: 0 }} exit={{ y: '100%' }} transition={{ type: 'spring', damping: 28, stiffness: 250 }} className="bg-white w-full max-w-[480px] rounded-t-[3rem] p-8 shadow-2xl overflow-hidden flex flex-col max-h-[80vh]" onClick={(e) => e.stopPropagation()}>
-              <div className="w-12 h-1.5 bg-slate-200 rounded-full mx-auto mb-8 shrink-0" />
-              <div className="flex items-center justify-between mb-6 shrink-0"><h3 className="text-xl font-bold text-slate-900">选择签到位置</h3><button onClick={() => setIsLocationPickerOpen(false)} className="w-8 h-8 flex items-center justify-center bg-slate-100 text-slate-400 rounded-full">✕</button></div>
-              <div className="flex-1 overflow-y-auto space-y-3 pr-1 pb-[calc(40px+var(--sab))] custom-scrollbar px-1">
-                <motion.div 
-                  whileTap={{ scale: 0.98 }} 
-                  onClick={() => { setLat(''); setLng(''); setLocationStr(''); setIsLocationPickerOpen(false); }} 
-                  className={`p-5 rounded-[1.5rem] border-2 transition-all cursor-pointer flex items-center justify-between ${!lat ? 'border-blue-500 bg-blue-50/30' : 'border-slate-50 bg-slate-100/50 hover:bg-white'}`}
+          <LocationDialog title="选择签到位置" description="选择一个常用地点，或不发送位置信息" onClose={() => setIsLocationPickerOpen(false)}>
+              <div className="space-y-3">
+                <button type="button" aria-pressed={!selectedLocation}
+                  onClick={() => { setSelectedLocation(null); setIsLocationPickerOpen(false); }} 
+                  className={`w-full text-left p-4 rounded-2xl border flex items-center gap-3 ${!selectedLocation ? 'border-blue-500 bg-blue-50/50' : 'border-slate-200 bg-white'}`}
                 >
+                  <span className="loc-place-icon"><LocateOff size={20} /></span>
                   <div className="flex-1 min-w-0 pr-4">
                     <div className="font-bold text-slate-800 text-sm">不使用位置</div>
-                    <div className="text-[10px] text-slate-400 font-medium">不发送地理位置信息进行签到</div>
+                    <div className="loc-note">不发送地理位置信息进行签到</div>
                   </div>
-                  {!lat && <CheckCircle2 size={20} className="text-blue-600 shrink-0" />}
-                </motion.div>
+                  {!selectedLocation && <CheckCircle2 size={20} className="text-blue-600 shrink-0" />}
+                </button>
 
-                {LOCATION_PRESETS.map((p: any, i: number) => {
-                const isSelected = p.lat === lat && p.lng === lng;
+                <p className="loc-note">仅展示当前账号可用的地点。可在“我的常用地点”中添加和管理。</p>
+                {locationLoading && <p role="status" className="text-sm text-blue-600">正在加载地点…</p>}
+                {locationError && <div role="alert" className="text-sm text-red-600">{locationError}<button type="button" onClick={() => void loadSignLocations()} className="ml-2 underline">重新加载</button></div>}
+                {!locationLoading && !locationError && signLocations.length === 0 && <p className="text-sm text-slate-500">暂无可用地点，请先保存个人常用地点。</p>}
+                {!locationLoading && !locationError && signLocations.map(p => {
+                const isSelected = p.id === selectedLocation?.id;
                 return (
-                  <motion.div key={i} whileTap={{ scale: 0.98 }} onClick={() => { setLat(p.lat); setLng(p.lng); setLocationStr(p.description); setIsLocationPickerOpen(false); }} className={`p-5 rounded-[1.5rem] border-2 transition-all cursor-pointer flex items-center justify-between ${isSelected ? 'border-blue-500 bg-blue-50/30' : 'border-slate-50 bg-slate-50/50 hover:bg-white'}`}>
-                    <div className="flex-1 min-w-0 pr-4"><div className="font-bold text-slate-800 mb-0.5 text-sm">{p.name}</div><div className="text-[10px] text-slate-400 font-medium truncate">{p.description}</div></div>
+                  <motion.button type="button" aria-pressed={isSelected} key={p.id} whileTap={{ scale: 0.98 }} onClick={() => { setSelectedLocation(p); setIsLocationPickerOpen(false); }} className={`w-full text-left p-4 rounded-2xl border transition-colors flex items-center gap-3 ${isSelected ? 'border-blue-500 bg-blue-50/50' : 'border-slate-200 bg-white hover:bg-slate-50'}`}>
+                    <span className="loc-place-icon"><MapPin size={20} /></span>
+                    <div className="flex-1 min-w-0"><div className="font-semibold text-slate-800 text-sm break-words">{p.name}</div><div className="loc-note">{p.address}</div>{p.is_personal && <span className="loc-badge mt-2">我的常用</span>}</div>
                     {isSelected && <CheckCircle2 size={20} className="text-blue-600 shrink-0" />}
-                  </motion.div>
+                  </motion.button>
                 );
               })}</div>
-            </motion.div>
-          </motion.div>
+          </LocationDialog>
         )}
       </AnimatePresence>
 

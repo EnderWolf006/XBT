@@ -8,3 +8,19 @@
 *.njsproj
 *.sln
 *.sw?
+
+# Local runtime configuration and credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Complete deployment artifacts are distributed as release assets.
+/SHA256SUMS.json
+/Server/xbt-server
+/Server/xbt-server.exe
+/Server/xbt-server-linux-amd64
+/Server/cache/
+/Web/test-results/
+/Web/playwright-report/

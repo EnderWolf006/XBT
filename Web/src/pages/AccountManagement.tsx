@@ -10,6 +10,7 @@ import {
 } from 'lucide-react';
 import { useAuthStore } from '../store/auth';
 import toast from 'react-hot-toast';
+import RemoteImage from '../components/RemoteImage';
 
 const AccountManagement = () => {
   const navigate = useNavigate();
@@ -76,7 +77,7 @@ const AccountManagement = () => {
                 <div className="flex items-center space-x-4">
                   <div className="w-12 h-12 rounded-xl bg-slate-100 overflow-hidden border-2 border-white shadow-sm">
                     {account.user.avatar ? (
-                      <img src={account.user.avatar} alt={account.user.name} referrerPolicy="no-referrer" className="w-full h-full object-cover" />
+                      <RemoteImage src={account.user.avatar} alt={account.user.name} token={account.token} className="w-full h-full" />
                     ) : (
                       <div className="w-full h-full flex items-center justify-center text-slate-400">
                         <UserIcon size={24} />

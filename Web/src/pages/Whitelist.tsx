@@ -15,6 +15,7 @@ import {
 import toast from 'react-hot-toast';
 import client from '../api/client';
 import type { ApiResponse, WhitelistItem } from '../types';
+import { getErrorMessage } from '../utils/errors';
 
 const Whitelist = () => {
   const navigate = useNavigate();
@@ -34,8 +35,8 @@ const Whitelist = () => {
     try {
       const response = await client.get<ApiResponse<WhitelistItem[]>>('/admin/whitelist/users');
       setList(response.data.data);
-    } catch (error: any) {
-      toast.error(error.message || '获取白名单失败');
+    } catch (error) {
+      toast.error(getErrorMessage(error, '获取白名单失败'));
     } finally {
       setIsLoading(false);
     }
@@ -54,8 +55,8 @@ const Whitelist = () => {
       setShowAddModal(false);
       setNewMobile('');
       fetchList();
-    } catch (error: any) {
-      toast.error(error.message || '添加失败');
+    } catch (error) {
+      toast.error(getErrorMessage(error, '添加失败'));
     } finally {
       setIsSubmitting(false);
     }
@@ -70,8 +71,8 @@ const Whitelist = () => {
       setShowBatchModal(false);
       setBatchMobiles('');
       fetchList();
-    } catch (error: any) {
-      toast.error(error.message || '导入失败');
+    } catch (error) {
+      toast.error(getErrorMessage(error, '导入失败'));
     } finally {
       setIsSubmitting(false);
     }
@@ -83,8 +84,8 @@ const Whitelist = () => {
       await client.delete(`/admin/whitelist/users/${id}`);
       toast.success('已删除');
       fetchList();
-    } catch (error: any) {
-      toast.error(error.message || '删除失败');
+    } catch (error) {
+      toast.error(getErrorMessage(error, '删除失败'));
     }
   };
 

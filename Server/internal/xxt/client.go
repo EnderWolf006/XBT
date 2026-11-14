@@ -2,6 +2,8 @@ package xxt
 
 import (
 	"bytes"
+	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
@@ -19,6 +21,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/sync/singleflight"
+	"xbt2/server/internal/geo"
 )
 
 const (
@@ -32,12 +37,15 @@ const (
 )
 
 type Client struct {
-	aesKey         string
-	mobileUA       string
-	activeFetchMax int
-	http           *http.Client
-	sessionMu      sync.Mutex
-	sessions       map[string]*Session
+	signLocationOffset  geo.Point
+	signAddressResolver func(geo.Point) (string, error)
+	aesKey              string
+	mobileUA            string
+	activeFetchMax      int
+	http                *http.Client
+	sessionMu           sync.Mutex
+	sessions            map[string]*Session
+	logins              singleflight.Group
 }
 
 type Session struct {
@@ -75,6 +83,8 @@ type SignDetail struct {
 	SignType     int
 	IfRefreshEWM bool
 	IfPhoto      bool
+	IfGetRange   bool
+	NeedFace     bool
 }
 
 type FixedParams struct {
@@ -106,6 +116,10 @@ func New(aesKey, mobileUA string, insecureTLS bool, activeFetchMax int) *Client 
 }
 
 func (c *Client) PreLogin(mobile, password string) (*LoginResult, error) {
+	return c.preLoginContext(context.Background(), mobile, password)
+}
+
+func (c *Client) preLoginContext(ctx context.Context, mobile, password string) (*LoginResult, error) {
 	jar, _ := cookiejar.New(nil)
 	cli := *c.http
 	cli.Jar = jar
@@ -122,11 +136,14 @@ func (c *Client) PreLogin(mobile, password string) (*LoginResult, error) {
 	form.Set("independentId", "0")
 	form.Set("independentNameId", "0")
 
-	req, _ := http.NewRequest(http.MethodPost, "https://passport2.chaoxing.com/fanyalogin?"+form.Encode(), nil)
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, "https://passport2.chaoxing.com/fanyalogin?"+form.Encode(), nil)
 	req.Header.Set("User-Agent", "Mozilla/5.0")
 	resp, err := cli.Do(req)
 	if err != nil {
-		return nil, err
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		return nil, fmt.Errorf("学习通登录连接失败，请稍后重试")
 	}
 	defer resp.Body.Close()
 
@@ -140,7 +157,7 @@ func (c *Client) PreLogin(mobile, password string) (*LoginResult, error) {
 		return nil, fmt.Errorf("账号或密码错误")
 	}
 
-	req2, _ := http.NewRequest(http.MethodGet, "http://i.chaoxing.com/base", nil)
+	req2, _ := http.NewRequestWithContext(ctx, http.MethodGet, "http://i.chaoxing.com/base", nil)
 	req2.Header.Set("User-Agent", "Mozilla/5.0")
 	resp2, err := cli.Do(req2)
 	if err != nil {
@@ -187,19 +204,46 @@ func (c *Client) PreLogin(mobile, password string) (*LoginResult, error) {
 }
 
 func (c *Client) ensureSession(mobile, password string) (*Session, error) {
+	return c.ensureSessionContext(context.Background(), mobile, password)
+}
+
+func (c *Client) ensureSessionContext(ctx context.Context, mobile, password string) (*Session, error) {
 	c.sessionMu.Lock()
 	s, ok := c.sessions[mobile]
 	c.sessionMu.Unlock()
 	if ok && s.Password == password && time.Since(s.LastLoginAt) < 24*time.Hour {
 		return s, nil
 	}
-	_, err := c.PreLogin(mobile, password)
-	if err != nil {
-		return nil, err
+	key := fmt.Sprintf("%x", sha256.Sum256([]byte(mobile+"\x00"+password)))
+	result := c.logins.DoChan(key, func() (interface{}, error) {
+		c.sessionMu.Lock()
+		existing := c.sessions[mobile]
+		c.sessionMu.Unlock()
+		if existing != nil && existing.Password == password && time.Since(existing.LastLoginAt) < 24*time.Hour {
+			return existing, nil
+		}
+		loginCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		if _, err := c.preLoginContext(loginCtx, mobile, password); err != nil {
+			return nil, err
+		}
+		c.sessionMu.Lock()
+		defer c.sessionMu.Unlock()
+		session := c.sessions[mobile]
+		if session == nil || session.Password != password {
+			return nil, fmt.Errorf("登录状态已变化，请重试")
+		}
+		return session, nil
+	})
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case completed := <-result:
+		if completed.Err != nil {
+			return nil, completed.Err
+		}
+		return completed.Val.(*Session), nil
 	}
-	c.sessionMu.Lock()
-	defer c.sessionMu.Unlock()
-	return c.sessions[mobile], nil
 }
 
 func (c *Client) GetCourses(mobile, password string) ([]Course, error) {
@@ -283,7 +327,11 @@ func (c *Client) GetCourses(mobile, password string) ([]Course, error) {
 }
 
 func (c *Client) GetActives(mobile, password string, courseID, classID int64) ([]Active, error) {
-	s, err := c.ensureSession(mobile, password)
+	return c.GetActivesContext(context.Background(), mobile, password, courseID, classID)
+}
+
+func (c *Client) GetActivesContext(ctx context.Context, mobile, password string, courseID, classID int64) ([]Active, error) {
+	s, err := c.ensureSessionContext(ctx, mobile, password)
 	if err != nil {
 		return nil, err
 	}
@@ -291,7 +339,7 @@ func (c *Client) GetActives(mobile, password string, courseID, classID int64) ([
 	cli.Jar = s.Jar
 
 	u := fmt.Sprintf("https://mobilelearn.chaoxing.com/ppt/activeAPI/taskactivelist?courseId=%d&classId=%d", courseID, classID)
-	req, _ := http.NewRequest(http.MethodGet, u, nil)
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	req.Header.Set("User-Agent", c.mobileUA)
 	resp, err := cli.Do(req)
 	if err != nil {
@@ -344,40 +392,135 @@ func (c *Client) GetActives(mobile, password string, courseID, classID int64) ([
 	return out, nil
 }
 
+var needFacePattern = regexp.MustCompile(`openCheckFaceFlag\s*=\s*["']?\s*(\d)`)
+
+// GetNeedFace 读取签到页下发的 openCheckFaceFlag：1 表示该活动强制学习通客户端活体人脸。
+func (c *Client) GetNeedFace(mobile, password string, courseID, classID, activityID int64) (bool, error) {
+	return c.GetNeedFaceContext(context.Background(), mobile, password, courseID, classID, activityID)
+}
+
+func (c *Client) GetNeedFaceContext(ctx context.Context, mobile, password string, courseID, classID, activityID int64) (bool, error) {
+	s, err := c.ensureSessionContext(ctx, mobile, password)
+	if err != nil {
+		return false, err
+	}
+	cli := *c.http
+	cli.Jar = s.Jar
+	u := fmt.Sprintf("https://mobilelearn.chaoxing.com/newsign/preSign?courseId=%d&classId=%d&activePrimaryId=%d&general=1&sys=1&ls=1&appType=15&uid=%d&isTeacherViewOpen=0",
+		courseID, classID, activityID, s.UID)
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	req.Header.Set("User-Agent", c.mobileUA)
+	resp, err := cli.Do(req)
+	if err != nil {
+		return false, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return false, err
+	}
+	m := needFacePattern.FindSubmatch(body)
+	if len(m) < 2 {
+		return false, nil
+	}
+	return string(m[1]) == "1", nil
+}
+
 func (c *Client) GetSignDetail(mobile, password string, activityID int64) (SignDetail, error) {
-	s, err := c.ensureSession(mobile, password)
+	return c.GetSignDetailContext(context.Background(), mobile, password, activityID)
+}
+
+func (c *Client) GetSignDetailContext(ctx context.Context, mobile, password string, activityID int64) (SignDetail, error) {
+	s, err := c.ensureSessionContext(ctx, mobile, password)
 	if err != nil {
 		return SignDetail{}, err
 	}
 	cli := *c.http
 	cli.Jar = s.Jar
-	u := fmt.Sprintf("https://mobilelearn.chaoxing.com/newsign/signDetail?activePrimaryId=%d&type=1", activityID)
-	req, _ := http.NewRequest(http.MethodGet, u, nil)
-	req.Header.Set("User-Agent", c.mobileUA)
-	resp, err := cli.Do(req)
+	payload, err := c.readActivityDetail(ctx, &cli,
+		fmt.Sprintf("https://mobilelearn.chaoxing.com/newsign/signDetail?activePrimaryId=%d&type=1", activityID))
 	if err != nil {
 		return SignDetail{}, err
 	}
-	defer resp.Body.Close()
-	raw, err := io.ReadAll(resp.Body)
+	if data, ok := payload["data"].(map[string]interface{}); ok {
+		payload = data
+	}
+	modern, err := c.readActivityDetail(ctx, &cli,
+		fmt.Sprintf("https://mobilelearn.chaoxing.com/v2/apis/active/getPPTActiveInfo?activeId=%d", activityID))
 	if err != nil {
 		return SignDetail{}, err
 	}
-	var payload map[string]interface{}
-	if err := json.Unmarshal(raw, &payload); err != nil {
-		return SignDetail{}, err
+	if !boolFromAny(modern["result"]) {
+		message := strings.ToLower(strVal(modern["msg"]) + " " + strVal(modern["errorMsg"]))
+		if strings.Contains(message, "登录") || strings.Contains(message, "login") {
+			return SignDetail{}, fmt.Errorf("学习通登录已失效，请重新登录")
+		}
+		return SignDetail{}, fmt.Errorf("学习通签到规则暂时无法读取，请刷新重试")
+	}
+	rules, ok := modern["data"].(map[string]interface{})
+	if !ok {
+		return SignDetail{}, fmt.Errorf("学习通签到规则响应格式无效")
+	}
+	addressFlag := deepFindFirst(rules, "ifopenAddress", "ifOpenAddress")
+	if addressFlag == nil {
+		return SignDetail{}, fmt.Errorf("学习通位置校验规则缺失，请刷新重试")
 	}
 	end := parseTimeMillis(payload["endTime"])
 	if end == 0 {
 		end = 64060559999000
 	}
+	rangeFlag := boolFromAny(deepFindFirst(payload, "ifGetRange", "if_get_range", "ifRange"))
+	// 新版位置校验只在 PPT 详情的 ifopenAddress 中，旧详情会返回 ifGetRange=0。
+	rangeFlag = rangeFlag || boolFromAny(addressFlag)
+	if !rangeFlag {
+		// 部分版本的“限定范围”不写 ifGetRange，而是直接给出范围中心坐标。
+		lat := strings.TrimSpace(strVal(payload["latitude"]))
+		lng := strings.TrimSpace(strVal(payload["longitude"]))
+		if lat != "" && lng != "" && lat != "-1" && lng != "-1" && lat != "0" && lng != "0" {
+			rangeFlag = true
+		}
+	}
 	return SignDetail{
 		StartTime:    parseTimeMillis(payload["startTime"]),
 		EndTime:      end,
 		SignType:     int(int64FromAny(payload["otherId"])),
-		IfRefreshEWM: boolFromAny(payload["ifRefreshEwm"]),
-		IfPhoto:      boolFromAny(deepFindFirst(payload, "ifphoto", "ifPhoto")),
+		IfRefreshEWM: boolFromAny(firstNonNil(deepFindFirst(rules, "ifrefreshewm", "ifRefreshEwm"), payload["ifRefreshEwm"])),
+		IfPhoto:      boolFromAny(firstNonNil(deepFindFirst(rules, "ifphoto", "ifPhoto"), deepFindFirst(payload, "ifphoto", "ifPhoto"))),
+		IfGetRange:   rangeFlag,
+		NeedFace:     boolFromAny(deepFindFirst(rules, "openCheckFaceFlag")),
 	}, nil
+}
+
+func (c *Client) readActivityDetail(ctx context.Context, cli *http.Client, endpoint string) (map[string]interface{}, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", c.mobileUA)
+	resp, err := cli.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		return nil, fmt.Errorf("学习通登录已失效，请重新登录")
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("读取学习通签到详情失败（HTTP %d）", resp.StatusCode)
+	}
+	const limit = 256 << 10
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(raw) > limit {
+		return nil, fmt.Errorf("学习通签到详情响应过大")
+	}
+	var payload map[string]interface{}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return nil, fmt.Errorf("解析学习通签到详情失败: %w", err)
+	}
+	return payload, nil
 }
 
 func (c *Client) PreSign(mobile, password string, fixed FixedParams, code, enc string) error {
@@ -540,6 +683,13 @@ func (c *Client) SignPhoto(mobile, password string, fixed FixedParams, objectID 
 }
 
 func (c *Client) Sign(mobile, password string, fixed FixedParams, signType int, special map[string]interface{}) (string, error) {
+	if signType == SignLocation || signType == SignQRCode {
+		var err error
+		special, err = prepareSignCoordinatesWithAddress(special, c.signLocationOffset, c.signAddressResolver)
+		if err != nil {
+			return "", err
+		}
+	}
 	s, err := c.ensureSession(mobile, password)
 	if err != nil {
 		return "", err
@@ -576,6 +726,8 @@ func (c *Client) Sign(mobile, password string, fixed FixedParams, signType int, 
 		// 2) special.latitude/longitude/description（2.0 前端当前格式）
 		if locationJSON, ok := buildQRCodeLocationParam(special); ok {
 			params.Set("location", locationJSON)
+			// 新版签到页同时提交客户端定位原始结果，服务端用它做范围校验。
+			params.Set("locationResult", locationJSON)
 		}
 		params.Set("useragent", "")
 		params.Set("latitude", "-1")
@@ -606,16 +758,20 @@ func (c *Client) Sign(mobile, password string, fixed FixedParams, signType int, 
 			}
 		}
 		params.Set("signCode", signCode)
-		params.Set("latitude", "")
-		params.Set("longitude", "")
+		if !applySignCoordinateParams(params, special) {
+			params.Set("latitude", "")
+			params.Set("longitude", "")
+		}
 	case SignLocation:
 		params.Set("address", strVal(special["description"]))
 		params.Set("latitude", strVal(special["latitude"]))
 		params.Set("longitude", strVal(special["longitude"]))
 		params.Set("ifTiJiao", "1")
 	default:
-		params.Set("latitude", "-1")
-		params.Set("longitude", "-1")
+		if !applySignCoordinateParams(params, special) {
+			params.Set("latitude", "-1")
+			params.Set("longitude", "-1")
+		}
 	}
 
 	// 二维码签到在部分场景下会出现 enc 只能使用一次的情况。
@@ -649,6 +805,20 @@ func (c *Client) Sign(mobile, password string, fixed FixedParams, signType int, 
 	return c.doStuSignRequest(&cli, params)
 }
 
+func applySignCoordinateParams(params url.Values, special map[string]interface{}) bool {
+	lat := strings.TrimSpace(strVal(special["latitude"]))
+	lng := strings.TrimSpace(strVal(special["longitude"]))
+	if lat == "" || lng == "" || lat == "-1" || lng == "-1" {
+		return false
+	}
+	params.Set("latitude", lat)
+	params.Set("longitude", lng)
+	if addr := strings.TrimSpace(strVal(special["description"])); addr != "" {
+		params.Set("address", addr)
+	}
+	return true
+}
+
 func (c *Client) doStuSignRequest(cli *http.Client, params url.Values) (string, error) {
 	u := "https://mobilelearn.chaoxing.com/pptSign/stuSignajax?" + params.Encode()
 	req, _ := http.NewRequest(http.MethodGet, u, nil)
@@ -659,7 +829,20 @@ func (c *Client) doStuSignRequest(cli *http.Client, params url.Values) (string, 
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
-	return strings.TrimSpace(string(body)), nil
+	out := strings.TrimSpace(string(body))
+	if out != "success" && out != "success2" {
+		log.Printf("stuSignajax raw: activeId=%s uid=%s enc=%s result=%s",
+			sanitizeLogValue(params.Get("activeId")), sanitizeLogValue(params.Get("uid")),
+			truncateForLog(params.Get("enc"), 24), truncateForLog(out, 300))
+	}
+	return out, nil
+}
+
+func sanitizeLogValue(s string) string {
+	if len(s) > 32 {
+		return s[:32]
+	}
+	return s
 }
 
 func sanitizeMultipartFilename(filename string) string {

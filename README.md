@@ -2,11 +2,29 @@
 
 > 一套面向学习通签到场景的三端协同系统：`Web 管理端` + `Go 后端` + `Android 原生壳`
 
+本分支由 meiyoutou 基于 [EnderWolf006/XBT](https://github.com/EnderWolf006/XBT) 二次开发，
+保留原作者署名及 GNU GPL v3 许可证。新增部署说明见 [DEPLOYMENT.md](./DEPLOYMENT.md)。
+
 [![Web](https://img.shields.io/badge/Web-React%2019%20%2B%20Vite-61dafb)](#)
 [![Server](https://img.shields.io/badge/Server-Go%201.25%20%2B%20Gin-00add8)](#)
 [![Database](https://img.shields.io/badge/DB-PostgreSQL-336791)](#)
 [![Android](https://img.shields.io/badge/Android-Compose%20%2B%20CameraX-3ddc84)](#)
-[![License](https://img.shields.io/badge/License-Private-lightgrey)](#)
+[![License](https://img.shields.io/badge/License-GPL--3.0-blue)](./LICENSE)
+
+---
+
+## 二次开发完整部署版
+
+本次集中提交个人地点按账号隔离、地图搜索与统一弹层、签到组合规则显示、
+有界图片磁盘缓存与活动短缓存、紧凑响应式布局，以及 Android 相机异常处理等改进。
+公开访问、全员管理员、个人地点模式及全站定位偏移均保留显式配置开关，
+不因提供部署包而默认放开权限或启用偏移。
+
+完整部署包在本 Fork 的 Releases 中发布，包含对应源码、测试、依赖锁文件、
+Windows/Linux x64 后端、Web 静态资源、Windows 启动器和 SHA-256 清单。
+编译产物仅随发行附件提供，不放入源码提交。包内不含真实配置、账号数据、
+数据库备份、密钥、运行日志、依赖缓存或 APK；首次使用需按部署说明配置自己的环境。
+历史开发及设备验证边界保留在随包文档中，不代表所有外部服务或物理设备已验证。
 
 ---
 

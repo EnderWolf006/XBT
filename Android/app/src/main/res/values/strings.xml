@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">学不通</string>
+    <string name="target_url" translatable="false">http://127.0.0.1:38081/</string>
+    <string name="exit_press_again">再按一次退出应用</string>
+</resources>

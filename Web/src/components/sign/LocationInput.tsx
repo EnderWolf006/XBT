@@ -1,6 +1,6 @@
 import React from 'react';
 import { motion } from 'framer-motion';
-import { MapPin } from 'lucide-react';
+import { MapPin, ChevronRight } from 'lucide-react';
 
 interface LocationInputProps {
   name: string;
@@ -9,22 +9,20 @@ interface LocationInputProps {
 }
 
 export const LocationInput: React.FC<LocationInputProps> = ({ name, description, onOpen }) => (
-  <div className="w-full space-y-4 px-1">
-    <div className="text-center">
-      <h3 className="text-sm font-bold text-slate-800 uppercase tracking-widest">请确认签到位置</h3>
-    </div>
-    <motion.div 
+  <div className="location-ui w-full space-y-2">
+    <h3 className="loc-eyebrow">常用地点 / 已选位置</h3>
+    <motion.button
+      type="button"
       whileTap={{ scale: 0.98 }} 
       onClick={onOpen} 
-      className="w-full p-4 bg-slate-50 rounded-2xl flex items-center justify-between cursor-pointer group hover:bg-slate-100 transition-colors"
+      className="w-full p-4 bg-slate-50 border border-slate-200 rounded-2xl flex items-center gap-3 text-left hover:bg-blue-50 transition-colors"
     >
-      <div className="min-w-0 px-1">
-        <p className="font-bold text-slate-800 truncate text-sm">{name || '点击选择地点'}</p>
-        <p className="text-[10px] text-slate-400 font-medium truncate">{description}</p>
+      <span className="loc-place-icon"><MapPin size={19} /></span>
+      <div className="min-w-0 flex-1">
+        <p className="font-semibold text-slate-800 text-sm">{name || '点击选择地点'}</p>
+        <p className="loc-note line-clamp-2 mt-1">{description}</p>
       </div>
-      <div className="w-9 h-9 rounded-full bg-white flex items-center justify-center shadow-sm shrink-0">
-        <MapPin size={16} className="text-blue-500" />
-      </div>
-    </motion.div>
+      <ChevronRight size={17} className="text-slate-400 shrink-0" />
+    </motion.button>
   </div>
 );

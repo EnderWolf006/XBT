@@ -1,0 +1,4 @@
+<resources>
+    <!-- USB/ADB 测试包访问宿主机正式端口；需 adb reverse tcp:38081 tcp:38081。 -->
+    <string name="target_url" translatable="false">http://127.0.0.1:38081/</string>
+</resources>

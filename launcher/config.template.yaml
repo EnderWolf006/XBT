@@ -1,0 +1,19 @@
+app_env: prod
+http_addr: "127.0.0.1:3030"
+jwt_secret: "CHANGE_ME_JWT_SECRET"
+credential_secret: "CHANGE_ME_CREDENTIAL_SECRET"
+allow_insecure_tls: false
+chaoxing_aes_key: "u2oh6Vu^HWe4_AES"
+chaoxing_user_agent: "Dalvik/2.1.0 (Linux; U; Android 14; Redmi K20 Pro Build/UKQ1.230804.001) (schild:0945de15614364966e17460057ab5aa6) (device:Redmi K20 Pro) Language/zh_CN com.chaoxing.mobile/ChaoXingStudy_3_6.4.8_android_phone_10834_264 (@Kalimdor)_aa664e5fbb1d46df8e5aa65f62a438d8"
+activity_list_limit: 5
+public_access: false
+public_admin: false
+disable_admin: false
+personal_locations_only: false
+postgres_dsn: "host=127.0.0.1 port=5432 user=xbt password=CHANGE_ME_DB_PASSWORD dbname=xbt sslmode=disable TimeZone=Asia/Shanghai"
+amap:
+  api_key: ""
+  campus_address: ""
+  js_api_key: ""
+  security_js_code: ""
+sign_locations: []

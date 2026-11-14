@@ -61,9 +61,12 @@ CREATE TABLE IF NOT EXISTS sign_activities (
   sign_type INTEGER NOT NULL,
   if_refresh_ewm BOOLEAN NOT NULL DEFAULT FALSE,
   if_photo BOOLEAN NOT NULL DEFAULT FALSE,
+  rules_version INTEGER NOT NULL DEFAULT 0,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+ALTER TABLE sign_activities ADD COLUMN IF NOT EXISTS rules_version INTEGER NOT NULL DEFAULT 0;
 
 -- 6) 签到记录表
 CREATE TABLE IF NOT EXISTS sign_records (
@@ -77,8 +80,29 @@ CREATE TABLE IF NOT EXISTS sign_records (
   CONSTRAINT uq_sign_records_user_activity UNIQUE (user_uid, activity_id)
 );
 
--- 常用查询索引
-CREATE INDEX IF NOT EXISTS idx_user_courses_user_uid ON user_courses (user_uid);
+-- 6) 签到地点表
+CREATE TABLE IF NOT EXISTS sign_locations (
+  id BIGSERIAL PRIMARY KEY,
+  name VARCHAR(255) NOT NULL,
+  address VARCHAR(1024) NOT NULL,
+  latitude DOUBLE PRECISION NOT NULL CHECK (latitude >= -90 AND latitude <= 90),
+  longitude DOUBLE PRECISION NOT NULL CHECK (longitude >= -180 AND longitude <= 180),
+  amap_poi_id VARCHAR(128),
+  status VARCHAR(16) NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'enabled', 'disabled')),
+  source VARCHAR(16) NOT NULL DEFAULT 'manual',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  deleted_at TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS idx_sign_locations_status ON sign_locations (status);
+CREATE INDEX IF NOT EXISTS idx_sign_locations_deleted_at ON sign_locations (deleted_at);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_sign_locations_name_address_coords ON sign_locations (name, address, latitude, longitude) WHERE deleted_at IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_sign_locations_amap_poi_id ON sign_locations (amap_poi_id) WHERE amap_poi_id IS NOT NULL AND amap_poi_id <> '' AND deleted_at IS NULL;
+
+ALTER TABLE sign_locations DROP CONSTRAINT IF EXISTS sign_locations_status_check;
+ALTER TABLE sign_locations ADD CONSTRAINT sign_locations_status_check CHECK (status IN ('pending', 'enabled', 'disabled'));
+
 CREATE INDEX IF NOT EXISTS idx_user_courses_course_class ON user_courses (course_id, class_id);
 CREATE INDEX IF NOT EXISTS idx_sign_records_activity_id ON sign_records (activity_id);
 CREATE INDEX IF NOT EXISTS idx_sign_records_user_uid ON sign_records (user_uid);

@@ -6,6 +6,7 @@ import toast from 'react-hot-toast';
 import client from '../api/client';
 import { useAuthStore } from '../store/auth';
 import type { ApiResponse, AuthResponse } from '../types';
+import { getErrorMessage } from '../utils/errors';
 
 const Login = () => {
   const [mobile, setMobile] = useState('');
@@ -33,8 +34,8 @@ const Login = () => {
       addAccount(user, token);
       toast.success('登录成功');
       navigate('/', { replace: true });
-    } catch (error: any) {
-      toast.error(error.message || '登录失败，请检查账号密码');
+    } catch (error) {
+      toast.error(getErrorMessage(error, '登录失败，请检查账号密码'));
     } finally {
       setIsLoading(false);
     }

@@ -6,6 +6,8 @@ import toast from 'react-hot-toast';
 import client from '../api/client';
 import type { ApiResponse, Course } from '../types';
 import PullToRefresh from '../components/PullToRefresh';
+import { getErrorMessage } from '../utils/errors';
+import RemoteImage from '../components/RemoteImage';
 
 const Courses = () => {
   const navigate = useNavigate();
@@ -26,8 +28,8 @@ const Courses = () => {
       const data = response.data.data || [];
       setCourses(data);
       setInitialCourses(JSON.parse(JSON.stringify(data)));
-    } catch (error: any) {
-      toast.error(error.message || '获取课程失败');
+    } catch (error) {
+      toast.error(getErrorMessage(error, '获取课程失败'));
     } finally {
       setIsLoading(false);
     }
@@ -35,7 +37,7 @@ const Courses = () => {
 
   useEffect(() => {
     fetchCourses();
-  }, []);
+  }, [fetchCourses]);
 
   useEffect(() => {
     const handleBeforeUnload = (e: BeforeUnloadEvent) => {
@@ -56,25 +58,25 @@ const Courses = () => {
     }
   };
 
-  useEffect(() => {
-    if (!isLoading && courses && courses.length === 0 && !hasAttemptedSync && !isSyncing) {
-      setHasAttemptedSync(true);
-      handleSync();
-    }
-  }, [isLoading, courses, hasAttemptedSync, isSyncing]);
-
-  const handleSync = async () => {
+  const handleSync = useCallback(async () => {
     setIsSyncing(true);
     try {
       await client.post('/courses/sync');
       toast.success('同步成功');
-      fetchCourses();
-    } catch (error: any) {
-      toast.error(error.message || '同步失败');
+      await fetchCourses();
+    } catch (error) {
+      toast.error(getErrorMessage(error, '同步失败'));
     } finally {
       setIsSyncing(false);
     }
-  };
+  }, [fetchCourses]);
+
+  useEffect(() => {
+    if (!isLoading && courses.length === 0 && !hasAttemptedSync && !isSyncing) {
+      setHasAttemptedSync(true);
+      handleSync();
+    }
+  }, [isLoading, courses, hasAttemptedSync, isSyncing, handleSync]);
 
   const toggleSelection = (classId: number) => {
     setCourses(prev => (prev || []).map(c => 
@@ -93,8 +95,8 @@ const Courses = () => {
       toast.success('设置已保存');
       setInitialCourses(JSON.parse(JSON.stringify(courses)));
       navigate('/');
-    } catch (error: any) {
-      toast.error(error.message || '保存失败');
+    } catch (error) {
+      toast.error(getErrorMessage(error, '保存失败'));
     } finally {
       setIsSaving(false);
     }
@@ -149,7 +151,7 @@ const Courses = () => {
               >
                 <div className="relative w-12 h-12 flex-shrink-0">
                   {course.icon ? (
-                    <img src={course.icon} alt={course.name} referrerPolicy="no-referrer" className="w-full h-full rounded-xl object-cover" />
+                    <RemoteImage src={course.icon} alt={course.name} className="w-full h-full rounded-xl" />
                   ) : (
                     <div className="w-full h-full bg-slate-100 rounded-xl flex items-center justify-center text-slate-400">
                       <Book size={20} />
@@ -181,7 +183,7 @@ const Courses = () => {
         </div>
       </PullToRefresh>
 
-      <div className="fixed bottom-0 left-0 right-0 p-4 bg-white/80 backdrop-blur-md border-t border-slate-100 max-w-[480px] mx-auto z-30">
+      <div className="app-shell fixed bottom-0 left-0 right-0 p-4 bg-white/80 backdrop-blur-md border-t border-slate-100 mx-auto z-30">
         <motion.button
           whileTap={{ scale: 0.92 }}
           onClick={handleSave}

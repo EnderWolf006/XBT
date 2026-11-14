@@ -3,33 +3,62 @@ package service
 import (
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
+	"xbt2/server/internal/geo"
 	"xbt2/server/internal/model"
 	"xbt2/server/internal/xxt"
 )
 
 type SignService struct {
-	db  *gorm.DB
-	xxt *xxt.Client
-	cc  *CredentialCrypto
+	db                    *gorm.DB
+	xxt                   *xxt.Client
+	cc                    *CredentialCrypto
+	personalLocationsOnly bool
 }
 
 func NewSignService(db *gorm.DB, xxtClient *xxt.Client, cc *CredentialCrypto) *SignService {
 	return &SignService{db: db, xxt: xxtClient, cc: cc}
 }
 
+func (s *SignService) UsePersonalLocationsOnly() {
+	s.personalLocationsOnly = true
+}
+
 type ExecuteSignRequest struct {
-	ActivityID   int64
-	TargetUID    int64
-	SignType     int
-	CourseID     int64
-	ClassID      int64
-	IfRefreshEWM bool
-	Special      map[string]interface{}
+	ActivityID     int64
+	TargetUID      int64
+	SignType       int
+	CourseID       int64
+	ClassID        int64
+	IfRefreshEWM   bool
+	RequireRange   bool
+	LocationID     uint
+	LocationMode   string
+	DeviceLocation *DeviceLocation
+	MapLocation    *MapLocation
+	Special        map[string]interface{}
+}
+
+const LocationModeDeviceGPS = "device_gps"
+const LocationModeMapPick = "map_pick"
+
+type DeviceLocation struct {
+	Latitude         float64
+	Longitude        float64
+	Accuracy         float64
+	CapturedAt       time.Time
+	CoordinateSystem string
+}
+
+type MapLocation struct {
+	Latitude         float64
+	Longitude        float64
+	CoordinateSystem string
 }
 
 type ExecutePhotoSignRequest struct {
@@ -38,6 +67,7 @@ type ExecutePhotoSignRequest struct {
 	CourseID     int64
 	ClassID      int64
 	IfRefreshEWM bool
+	LocationID   uint
 	ObjectID     string
 	Filename     string
 	ContentType  string
@@ -61,6 +91,102 @@ type SignExecuteResult struct {
 	Message          string `json:"message"`
 }
 
+var ErrSignLocationUnavailable = errors.New("sign location unavailable")
+
+func validateExecuteSignLocation(signType int, requireRange bool, locationID uint, locationMode string, deviceLocation *DeviceLocation, mapLocation *MapLocation) error {
+	needsLocation := signType == xxt.SignLocation || requireRange
+	if !needsLocation {
+		if locationMode != "" || deviceLocation != nil || mapLocation != nil {
+			return fmt.Errorf("%w: device location is only valid for location signs", ErrInvalidSignLocationInput)
+		}
+		return nil
+	}
+	if locationMode == LocationModeDeviceGPS {
+		if locationID != 0 || deviceLocation == nil || mapLocation != nil || deviceLocation.CoordinateSystem != "GCJ-02" ||
+			deviceLocation.CapturedAt.IsZero() || math.IsNaN(deviceLocation.Accuracy) ||
+			math.IsInf(deviceLocation.Accuracy, 0) || deviceLocation.Accuracy < 0 ||
+			(geo.Point{Latitude: deviceLocation.Latitude, Longitude: deviceLocation.Longitude}).Validate() != nil {
+			return fmt.Errorf("%w: invalid device location", ErrInvalidSignLocationInput)
+		}
+		return nil
+	}
+	if locationMode == LocationModeMapPick {
+		if locationID != 0 || deviceLocation != nil || mapLocation == nil || mapLocation.CoordinateSystem != "GCJ-02" ||
+			(geo.Point{Latitude: mapLocation.Latitude, Longitude: mapLocation.Longitude}).Validate() != nil {
+			return fmt.Errorf("%w: invalid map location", ErrInvalidSignLocationInput)
+		}
+		return nil
+	}
+	if locationMode != "" || deviceLocation != nil || mapLocation != nil || locationID == 0 {
+		return fmt.Errorf("%w: location_id is required", ErrInvalidSignLocationInput)
+	}
+	return nil
+}
+
+func resolveMapLocationSpecial(location MapLocation) map[string]interface{} {
+	return map[string]interface{}{
+		"latitude":          fmt.Sprintf("%.6f", location.Latitude),
+		"longitude":         fmt.Sprintf("%.6f", location.Longitude),
+		"coordinate_system": "GCJ-02",
+		"description":       fmt.Sprintf("地图选择点（GCJ-02：%.6f, %.6f）", location.Latitude, location.Longitude),
+	}
+}
+
+func resolveDeviceLocationSpecial(location DeviceLocation) map[string]interface{} {
+	return map[string]interface{}{
+		"latitude":          fmt.Sprintf("%.6f", location.Latitude),
+		"longitude":         fmt.Sprintf("%.6f", location.Longitude),
+		"coordinate_system": "GCJ-02",
+		"description":       fmt.Sprintf("浏览器现场定位（GCJ-02：%.6f, %.6f；精度 %.1f 米）", location.Latitude, location.Longitude, location.Accuracy),
+	}
+}
+
+func resolveLocationSpecialFromLocation(location model.SignLocation, existing map[string]interface{}) (map[string]interface{}, error) {
+	if location.ID == 0 || location.Status != model.SignLocationEnabled || location.DeletedAt.Valid {
+		return nil, ErrSignLocationUnavailable
+	}
+	resolved := make(map[string]interface{}, len(existing)+3)
+	for key, value := range existing {
+		resolved[key] = value
+	}
+	resolved["latitude"] = fmt.Sprintf("%v", location.Latitude)
+	resolved["longitude"] = fmt.Sprintf("%v", location.Longitude)
+	resolved["description"] = location.Address
+	resolved["coordinate_system"] = "GCJ-02"
+	// A resolved database point must not be shadowed by legacy QR location JSON.
+	delete(resolved, "location")
+	return resolved, nil
+}
+
+func (s *SignService) ResolveLocationSpecial(locationID uint, existing map[string]interface{}) (map[string]interface{}, error) {
+	return s.ResolveLocationSpecialForUser(locationID, 0, existing)
+}
+
+func (s *SignService) ResolveLocationSpecialForUser(locationID uint, operatorUID int64, existing map[string]interface{}) (map[string]interface{}, error) {
+	if locationID == 0 {
+		return nil, fmt.Errorf("%w: location_id is required", ErrInvalidSignLocationInput)
+	}
+	var location model.SignLocation
+	query := s.db.Where("id = ? AND status = ? AND deleted_at IS NULL", locationID, model.SignLocationEnabled)
+	if s.personalLocationsOnly {
+		if operatorUID <= 0 {
+			return nil, ErrSignLocationUnavailable
+		}
+		query = query.Where("owner_uid = ?", operatorUID)
+	} else if operatorUID > 0 {
+		query = query.Where("(owner_uid IS NULL OR owner_uid = ?)", operatorUID)
+	} else {
+		query = query.Where("owner_uid IS NULL")
+	}
+	if err := query.First(&location).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrSignLocationUnavailable
+		}
+		return nil, err
+	}
+	return resolveLocationSpecialFromLocation(location, existing)
+}
+
 func (s *SignService) CheckSignStates(activityID int64, userIDs []int64) ([]SignCheckItem, error) {
 	if activityID <= 0 {
 		return nil, errors.New("invalid activity_id")
@@ -73,7 +199,35 @@ func (s *SignService) CheckSignStates(activityID int64, userIDs []int64) ([]Sign
 	return items, nil
 }
 
+func mergeSignSpecial(base map[string]interface{}, extra map[string]interface{}) map[string]interface{} {
+	out := make(map[string]interface{}, len(base)+len(extra))
+	for key, value := range base {
+		out[key] = value
+	}
+	for key, value := range extra {
+		out[key] = value
+	}
+	return out
+}
+
 func (s *SignService) ExecuteOne(operatorUID int64, req ExecuteSignRequest) SignExecuteResult {
+	if err := validateExecuteSignLocation(req.SignType, req.RequireRange, req.LocationID, req.LocationMode, req.DeviceLocation, req.MapLocation); err != nil {
+		return SignExecuteResult{UserID: req.TargetUID, Success: false, Message: "请选择有效的签到地点"}
+	}
+	needsLocation := req.SignType == xxt.SignLocation || req.RequireRange
+	if needsLocation || (req.SignType == xxt.SignQRCode && req.LocationID != 0) {
+		if req.LocationMode == LocationModeDeviceGPS {
+			req.Special = mergeSignSpecial(req.Special, resolveDeviceLocationSpecial(*req.DeviceLocation))
+		} else if req.LocationMode == LocationModeMapPick {
+			req.Special = mergeSignSpecial(req.Special, resolveMapLocationSpecial(*req.MapLocation))
+		} else {
+			resolved, err := s.ResolveLocationSpecialForUser(req.LocationID, operatorUID, req.Special)
+			if err != nil {
+				return SignExecuteResult{UserID: req.TargetUID, Success: false, Message: "签到地点不可用"}
+			}
+			req.Special = resolved
+		}
+	}
 	state := s.resolveSignState(req.ActivityID, req.TargetUID)
 	if state.Signed {
 		return SignExecuteResult{
@@ -155,6 +309,21 @@ func (s *SignService) ExecuteOne(operatorUID int64, req ExecuteSignRequest) Sign
 	}
 }
 
+func (s *SignService) UploadPhoto(operatorUID int64, filename, contentType string, data []byte) (string, error) {
+	if len(data) == 0 {
+		return "", errors.New("照片为空")
+	}
+	var target model.User
+	if err := s.db.Where("uid = ?", operatorUID).First(&target).Error; err != nil {
+		return "", errors.New("账号不可用")
+	}
+	password, err := s.cc.Decrypt(target.CredentialCipher)
+	if err != nil {
+		return "", errors.New("登录信息已过期，请重新登录")
+	}
+	return s.xxt.UploadPanFile(target.Mobile, password, filename, contentType, data)
+}
+
 func (s *SignService) ExecutePhoto(operatorUID int64, req ExecutePhotoSignRequest) SignExecuteResult {
 	if req.ActivityID <= 0 || req.CourseID <= 0 || req.ClassID <= 0 {
 		return SignExecuteResult{UserID: req.TargetUID, Success: false, Message: "签到参数不完整"}
@@ -200,6 +369,7 @@ func (s *SignService) ExecutePhoto(operatorUID int64, req ExecutePhotoSignReques
 		CourseID:     req.CourseID,
 		ClassID:      req.ClassID,
 		IfRefreshEWM: req.IfRefreshEWM,
+		LocationID:   req.LocationID,
 		Special: map[string]interface{}{
 			"object_id": objectID,
 		},
@@ -222,6 +392,10 @@ func (s *SignService) toUserSignMessage(raw string) string {
 		return "二维码参数缺失，请刷新活动后重试"
 	case strings.Contains(msg, "缺少 sign_code 参数"):
 		return "签到码缺失，请输入后重试"
+	case strings.Contains(msg, "errorLocation"):
+		return "位置校验未通过：所选地点不在教师设定的签到范围内，请换用现场定位或更近的地点"
+	case strings.Contains(msg, "签到失败，请重新扫描"):
+		return "二维码已失效，请重新扫描老师当前展示的二维码"
 	case strings.Contains(msg, "请求过于频繁"):
 		return "操作太频繁，请稍后再试"
 	case strings.Contains(msg, "活动已结束"):

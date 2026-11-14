@@ -1,0 +1,10 @@
+# 签到地点配置导入示例
+# 坐标仅为格式占位，不代表已核实的教学楼位置；上线前必须由管理员确认。
+sign_locations:
+  - name: "校区签到点示例"
+    address: "江淮校区（请填写已核实地址）"
+    latitude: 0.0
+    longitude: 0.0
+    # amap_poi_id: "已核实的高德 POI ID"
+    # status: pending   # 省略时默认为 pending；不要预置 enabled
+    # source: config    # 导入时强制标记为 config

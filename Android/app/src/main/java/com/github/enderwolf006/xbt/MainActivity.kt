@@ -10,6 +10,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
@@ -24,6 +25,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.Camera
+import androidx.camera.core.CameraInfoUnavailableException
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
@@ -61,9 +63,11 @@ import com.google.mlkit.vision.common.InputImage
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.net.URI
 
 class MainActivity : ComponentActivity() {
     private var filePathCallback: ValueCallback<Array<Uri>>? = null
+    private var pendingGeolocationPermission: ((Boolean) -> Unit)? = null
     private val fileChooserLauncher = registerForActivityResult(ActivityResultContracts.GetMultipleContents()) { uris ->
         filePathCallback?.onReceiveValue(uris.toTypedArray())
         filePathCallback = null
@@ -72,6 +76,15 @@ class MainActivity : ComponentActivity() {
     private val cameraPermissionLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) { isGranted ->
         if (!isGranted) {
             Toast.makeText(this, "需要相机权限以支持扫描或拍摄", Toast.LENGTH_SHORT).show()
+        }
+    }
+    private val locationPermissionLauncher = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { permissions ->
+        val granted = permissions[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
+            permissions[Manifest.permission.ACCESS_COARSE_LOCATION] == true
+        pendingGeolocationPermission?.invoke(granted)
+        pendingGeolocationPermission = null
+        if (!granted) {
+            Toast.makeText(this, "需要定位权限以支持现场定位", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -105,6 +118,18 @@ class MainActivity : ComponentActivity() {
                         onRequestCameraPermission = {
                             cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
                         },
+                        hasLocationPermission = {
+                            ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
+                                ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+                        },
+                        onRequestLocationPermission = { callback ->
+                            pendingGeolocationPermission?.invoke(false)
+                            pendingGeolocationPermission = callback
+                            locationPermissionLauncher.launch(arrayOf(
+                                Manifest.permission.ACCESS_FINE_LOCATION,
+                                Manifest.permission.ACCESS_COARSE_LOCATION,
+                            ))
+                        },
                     )
                 }
             }
@@ -119,11 +144,12 @@ private class NativeCameraPunchController(
     private val webView: WebView,
     private val hasCameraPermission: () -> Boolean,
     private val requestCameraPermission: () -> Unit,
+    private val onCameraError: (String?) -> Unit,
 ) {
     private var cameraProvider: ProcessCameraProvider? = null
     private var camera: Camera? = null
     private var imageCapture: androidx.camera.core.ImageCapture? = null
-    private var isScannerActive = false
+    @Volatile private var isScannerActive = false
     private var requestedFacing = CameraSelector.LENS_FACING_BACK
     private val mainHandler = Handler(Looper.getMainLooper())
     private val bindRunnable = Runnable { bindCamera() }
@@ -133,6 +159,13 @@ private class NativeCameraPunchController(
     private var lastQrEmitAt = 0L
     @Volatile private var lastCameraActive = false
     @Volatile private var lastCameraError = ""
+    private val initialization = CameraInitialization<ProcessCameraProvider>(
+        onReady = { provider ->
+            cameraProvider = provider
+            if (isScannerActive) scheduleBind()
+        },
+        onUnavailable = { message, cause -> reportCameraError(message, cause) },
+    )
 
     init {
         previewView.visibility = View.GONE
@@ -142,37 +175,55 @@ private class NativeCameraPunchController(
 
         webView.addJavascriptInterface(JsBridge(), "XBTCameraBridge")
 
-        val providerFuture = ProcessCameraProvider.getInstance(context)
-        providerFuture.addListener(
-            {
-                cameraProvider = providerFuture.get()
-                if (isScannerActive) {
-                    scheduleBind()
-                }
-            },
-            ContextCompat.getMainExecutor(context)
-        )
+        try {
+            val providerFuture = ProcessCameraProvider.getInstance(context)
+            providerFuture.addListener(
+                { initialization.complete(providerFuture) },
+                ContextCompat.getMainExecutor(context)
+            )
+        } catch (exception: IllegalStateException) {
+            initialization.fail(exception)
+        }
     }
 
     fun onDestroy() {
+        if (initialization.isClosed) return
+        initialization.close()
+        isScannerActive = false
         mainHandler.removeCallbacks(bindRunnable)
         cameraProvider?.unbindAll()
+        cameraProvider = null
+        camera = null
+        imageCapture = null
         previewView.visibility = View.GONE
+        webView.removeJavascriptInterface("XBTCameraBridge")
         barcodeScanner.close()
         cameraExecutor.shutdown()
     }
 
     private fun scheduleBind() {
+        if (initialization.isClosed) return
         mainHandler.removeCallbacks(bindRunnable)
         // 合并连续的激活/切换镜头请求，避免重复重绑造成黑帧。
         mainHandler.post(bindRunnable)
     }
 
     private fun bindCamera() {
-        val provider = cameraProvider ?: return
+        if (initialization.isClosed) return
         if (!isScannerActive) {
-            provider.unbindAll()
+            cameraProvider?.unbindAll()
+            camera = null
+            imageCapture = null
             previewView.visibility = View.GONE
+            return
+        }
+        val provider = cameraProvider
+        if (provider == null) {
+            previewView.visibility = View.GONE
+            initialization.error?.let { message ->
+                emitCameraState(false, message)
+                onCameraError(message)
+            }
             return
         }
         if (!hasCameraPermission()) {
@@ -192,7 +243,6 @@ private class NativeCameraPunchController(
         val capture = androidx.camera.core.ImageCapture.Builder()
             .setCaptureMode(androidx.camera.core.ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
             .build()
-        imageCapture = capture
 
         val analysis = ImageAnalysis.Builder()
             .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
@@ -203,24 +253,49 @@ private class NativeCameraPunchController(
                 }
             }
 
-        runCatching {
+        try {
             provider.unbindAll()
-            camera = provider.bindToLifecycle(lifecycleOwner, selector, preview, capture, analysis)
-            previewView.visibility = View.VISIBLE
-            emitCameraState(true, null)
-        }.onFailure {
-            if (requestedFacing == CameraSelector.LENS_FACING_FRONT) {
-                requestedFacing = CameraSelector.LENS_FACING_BACK
-                bindCamera()
-            } else {
-                previewView.visibility = View.GONE
-                val detail = "${it.javaClass.simpleName}:${it.message ?: "bind-failed"}"
-                emitCameraState(false, detail)
+            if (!provider.hasCamera(selector)) {
+                handleBindFailure(IllegalArgumentException("Requested camera is unavailable"))
+                return
             }
+            camera = provider.bindToLifecycle(lifecycleOwner, selector, preview, capture, analysis)
+            imageCapture = capture
+            previewView.visibility = View.VISIBLE
+            onCameraError(null)
+            emitCameraState(true, null)
+        } catch (exception: CameraInfoUnavailableException) {
+            handleBindFailure(exception)
+        } catch (exception: IllegalArgumentException) {
+            handleBindFailure(exception)
+        } catch (exception: IllegalStateException) {
+            handleBindFailure(exception)
         }
     }
 
+    private fun handleBindFailure(exception: Exception) {
+        camera = null
+        imageCapture = null
+        if (requestedFacing == CameraSelector.LENS_FACING_FRONT) {
+            requestedFacing = CameraSelector.LENS_FACING_BACK
+            bindCamera()
+        } else {
+            reportCameraError(CAMERA_UNAVAILABLE_MESSAGE, exception)
+        }
+    }
+
+    private fun reportCameraError(message: String, cause: Throwable) {
+        if (initialization.isClosed) return
+        Log.e("XBTCamera", message, cause)
+        camera = null
+        imageCapture = null
+        previewView.visibility = View.GONE
+        emitCameraState(false, message)
+        onCameraError(message)
+    }
+
     private fun setScannerActive(active: Boolean) {
+        if (initialization.isClosed) return
         if (isScannerActive == active) {
             return
         }
@@ -232,6 +307,7 @@ private class NativeCameraPunchController(
     }
 
     private fun setLensFacing(mode: String?) {
+        if (initialization.isClosed) return
         val targetFacing = if (mode.equals("user", ignoreCase = true)) {
             CameraSelector.LENS_FACING_FRONT
         } else {
@@ -255,7 +331,12 @@ private class NativeCameraPunchController(
         return target
     }
 
+    @androidx.annotation.OptIn(androidx.camera.core.ExperimentalGetImage::class)
     private fun analyzeQrFrame(imageProxy: ImageProxy) {
+        if (initialization.isClosed || !isScannerActive) {
+            imageProxy.close()
+            return
+        }
         val image = imageProxy.image
         if (image == null) {
             imageProxy.close()
@@ -272,6 +353,7 @@ private class NativeCameraPunchController(
     }
 
     private fun emitFirstQr(barcodes: List<Barcode>) {
+        if (initialization.isClosed || !isScannerActive) return
         val qrText = barcodes.firstOrNull { it.rawValue?.isNotBlank() == true }?.rawValue ?: return
         val now = System.currentTimeMillis()
         if (qrText == lastQrPayload && now - lastQrEmitAt < 700L) return
@@ -291,7 +373,7 @@ private class NativeCameraPunchController(
         """.trimIndent()
 
         webView.post {
-            webView.evaluateJavascript(js, null)
+            if (!initialization.isClosed && isScannerActive) webView.evaluateJavascript(js, null)
         }
     }
 
@@ -309,16 +391,27 @@ private class NativeCameraPunchController(
             })();
         """.trimIndent()
         webView.post {
-            webView.evaluateJavascript(js, null)
+            if (!initialization.isClosed) webView.evaluateJavascript(js, null)
         }
     }
 
     private fun takePhoto() {
-        val capture = imageCapture ?: return
+        if (initialization.isClosed) return
+        val capture = imageCapture
+        if (!isScannerActive || capture == null) {
+            val message = initialization.error ?: "相机尚未就绪，暂时无法拍照。"
+            emitCameraState(false, message)
+            onCameraError(message)
+            return
+        }
         capture.takePicture(
             ContextCompat.getMainExecutor(context),
             object : androidx.camera.core.ImageCapture.OnImageCapturedCallback() {
                 override fun onCaptureSuccess(image: ImageProxy) {
+                    if (initialization.isClosed || !isScannerActive) {
+                        image.close()
+                        return
+                    }
                     val bitmap = imageProxyToBitmap(image)
                     val base64 = bitmapToBase64(bitmap)
                     image.close()
@@ -326,7 +419,7 @@ private class NativeCameraPunchController(
                 }
 
                 override fun onError(exception: androidx.camera.core.ImageCaptureException) {
-                    // handle error
+                    reportCameraError("拍照失败，请重新打开相机后重试。", exception)
                 }
             }
         )
@@ -356,7 +449,7 @@ private class NativeCameraPunchController(
             })();
         """.trimIndent()
         webView.post {
-            webView.evaluateJavascript(js, null)
+            if (!initialization.isClosed && isScannerActive) webView.evaluateJavascript(js, null)
         }
     }
 
@@ -406,7 +499,9 @@ private class NativeCameraPunchController(
             // 当前扫码页视频区域是全屏，先保留参数用于后续扩展：
             // 当视频区域不是全屏时，可基于这里做原生遮罩裁切。
             webView.post {
-                previewView.visibility = if (isScannerActive) View.VISIBLE else View.GONE
+                if (!initialization.isClosed) {
+                    previewView.visibility = if (isScannerActive && lastCameraActive) View.VISIBLE else View.GONE
+                }
             }
         }
     }
@@ -417,11 +512,25 @@ private data class WebShellHolder(
     val cameraController: NativeCameraPunchController,
 )
 
+internal fun isTrustedGeolocationOrigin(origin: String?): Boolean {
+    if (origin.isNullOrBlank()) return false
+    return try {
+        val uri = URI(origin)
+        val scheme = uri.scheme?.lowercase() ?: return false
+        val host = uri.host?.lowercase() ?: return false
+        scheme == "https" || (scheme == "http" && (host == "localhost" || host == "127.0.0.1" || host == "::1"))
+    } catch (_: IllegalArgumentException) {
+        false
+    }
+}
+
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
 fun MainScreen(
     onShowFileChooser: (ValueCallback<Array<Uri>>) -> Unit,
     onRequestCameraPermission: () -> Unit,
+    hasLocationPermission: () -> Boolean,
+    onRequestLocationPermission: ((Boolean) -> Unit) -> Unit,
 ) {
     val context = LocalContext.current
     val url = context.getString(R.string.target_url)
@@ -430,6 +539,7 @@ fun MainScreen(
     var webView: WebView? by remember { mutableStateOf(null) }
     var lastBackPressTime by remember { mutableLongStateOf(0L) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
+    var cameraError by remember { mutableStateOf<String?>(null) }
     var loadProgress by remember { mutableIntStateOf(0) }
 
     // 控制状态
@@ -663,7 +773,27 @@ fun MainScreen(
                         }
 
                         override fun onPermissionRequest(request: PermissionRequest) {
-                            request.grant(request.resources)
+                            val allowed = request.resources.filter { resource ->
+                                resource == PermissionRequest.RESOURCE_VIDEO_CAPTURE &&
+                                    ContextCompat.checkSelfPermission(ctx, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+                            }.toTypedArray()
+                            if (allowed.isEmpty()) request.deny() else request.grant(allowed)
+                        }
+
+                        override fun onGeolocationPermissionsShowPrompt(origin: String?, callback: GeolocationPermissions.Callback?) {
+                            if (callback == null) return
+                            if (!isTrustedGeolocationOrigin(origin)) {
+                                callback.invoke(origin, false, false)
+                                Toast.makeText(ctx, "仅允许可信 HTTPS 或本机 localhost 页面请求定位", Toast.LENGTH_SHORT).show()
+                                return
+                            }
+                            if (hasLocationPermission()) {
+                                callback.invoke(origin, true, false)
+                                return
+                            }
+                            onRequestLocationPermission { granted ->
+                                callback.invoke(origin, granted, false)
+                            }
                         }
 
                         override fun onShowFileChooser(webView: WebView?, filePathCallback: ValueCallback<Array<Uri>>?, fileChooserParams: FileChooserParams?): Boolean {
@@ -702,6 +832,7 @@ fun MainScreen(
                         ContextCompat.checkSelfPermission(ctx, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
                     },
                     requestCameraPermission = onRequestCameraPermission,
+                    onCameraError = { cameraError = it },
                 ).also { cameraController ->
                     root.tag = WebShellHolder(
                         webView = innerWebView,
@@ -712,6 +843,16 @@ fun MainScreen(
                 root.addView(preview)
                 root.addView(innerWebView)
                 root
+            },
+            onReset = null,
+            onRelease = { root ->
+                val holder = root.tag as? WebShellHolder
+                if (holder != null) {
+                    holder.cameraController.onDestroy()
+                    root.removeAllViews()
+                    holder.webView.stopLoading()
+                    holder.webView.destroy()
+                }
             },
             update = {
                 val holder = (it as? FrameLayout)?.tag as? WebShellHolder
@@ -839,6 +980,27 @@ fun MainScreen(
                         webView?.reload()
                     }) {
                         Text("重新加载")
+                    }
+                }
+            }
+        }
+
+        cameraError?.let { message ->
+            Surface(
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .statusBarsPadding()
+                    .padding(12.dp),
+                color = MaterialTheme.colorScheme.errorContainer,
+                shape = MaterialTheme.shapes.medium,
+            ) {
+                Column(modifier = Modifier.padding(12.dp)) {
+                    Text(message, color = MaterialTheme.colorScheme.onErrorContainer)
+                    TextButton(
+                        onClick = { cameraError = null },
+                        modifier = Modifier.align(Alignment.End),
+                    ) {
+                        Text("知道了")
                     }
                 }
             }

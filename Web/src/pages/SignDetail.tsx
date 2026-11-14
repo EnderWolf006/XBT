@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo, useRef } from 'react';
+import { useEffect, useState, useMemo, useRef, useCallback } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { 
@@ -13,13 +13,16 @@ import {
   User,
   Camera,
   Fingerprint,
-  RectangleEllipsis
+  RectangleEllipsis,
+  LocateFixed,
+  Map as MapIcon,
+  Info
 } from 'lucide-react';
 import toast from 'react-hot-toast';
-import client from '../api/client';
+import client, { LONG_REQUEST_TIMEOUT } from '../api/client';
 import { useAuthStore } from '../store/auth';
-import type { ApiResponse, Classmate, SignActivity, CourseActivities, SignStatusMessage, SignCheckItem } from '../types';
-import config from '../../config.yaml';
+import type { ApiResponse, Classmate, SignActivity, CourseActivities, SignStatusMessage, SignCheckItem, SignLocation, SignExecuteResult } from '../types';
+import { getErrorMessage, isCancellationError } from '../utils/errors';
 
 // Import refactored components
 import { GestureInput } from '../components/sign/GestureInput';
@@ -29,8 +32,14 @@ import { QrInput } from '../components/sign/QrInput';
 import { NormalInput } from '../components/sign/NormalInput';
 import { PhotoInput } from '../components/sign/PhotoInput';
 import { ProgressCard } from '../components/sign/ProgressCard';
+import LocationCapture from '../components/LocationCapture';
+import LocationDialog from '../components/LocationDialog';
+import SignLocationPicker from '../components/sign/SignLocationPicker';
+import { captureLocationPreview, type GPSPreview, type Point } from '../utils/locationPreview';
+import { nearestEnabledLocation } from '../utils/locationMatching';
+import RemoteImage from '../components/RemoteImage';
+import { describeSignRules } from '../utils/signRules';
 
-const LOCATION_PRESETS = config.sign?.location_presets || [];
 const MAX_PHOTO_UPLOAD_BYTES = 20 * 1024 * 1024;
 
 const isImageFile = (file: File) => (
@@ -76,7 +85,11 @@ const SignDetail = () => {
   
   const activity = location.state?.activity as SignActivity;
   const course = location.state?.course as CourseActivities;
-  const isPhotoSign = activity?.sign_type === 0 && activity.if_photo;
+  // 人脸/拍照验证与签到类型无关：手势、签到码、位置签到都可能额外要求拍照。
+  const requiresPhoto = !!activity?.if_photo;
+  // 限定范围校验与位置签到同样需要坐标。
+  const requiresLocation = activity?.sign_type === 4 || !!activity?.if_get_range;
+  const isPhotoSign = activity?.sign_type === 0 && !!activity.if_photo;
 
   const [classmates, setClassmates] = useState<Classmate[]>([]);
   const [selectedUids, setSelectedUids] = useState<number[]>([]);
@@ -84,10 +97,19 @@ const SignDetail = () => {
   const [isExecuting, setIsExecuting] = useState(false);
   
   const [signCode, setSignCode] = useState('');
-  const [lat, setLat] = useState('');
-  const [lng, setLng] = useState('');
-  const [locationStr, setLocationStr] = useState('');
+  const [signLocations, setSignLocations] = useState<SignLocation[]>([]);
+  const [selectedLocation, setSelectedLocation] = useState<SignLocation | null>(null);
+  const [selectedMapPoint, setSelectedMapPoint] = useState<Point | null>(null);
+  const [isLoadingLocations, setIsLoadingLocations] = useState(false);
+  const [locationLoadError, setLocationLoadError] = useState('');
   const [isLocationPickerOpen, setIsLocationPickerOpen] = useState(false);
+  const [isLocationMapOpen, setIsLocationMapOpen] = useState(false);
+  const [isMapBusy, setMapBusy] = useState(false);
+  const [isQuickLocationSigning, setIsQuickLocationSigning] = useState(false);
+  const locationSelectionEpoch = useRef(0);
+  const closeLocationPicker = () => { locationSelectionEpoch.current++; setIsLocationPickerOpen(false); };
+  const closeLocationMap = () => { locationSelectionEpoch.current++; setIsLocationMapOpen(false); };
+  useEffect(() => () => { locationSelectionEpoch.current++; }, []);
   const [photoFiles, setPhotoFiles] = useState<File[]>([]);
   const [photoPreviewUrls, setPhotoPreviewUrls] = useState<string[]>([]);
   
@@ -96,6 +118,7 @@ const SignDetail = () => {
   const [classmateSignStates, setClassmateSignStates] = useState<Record<number, SignCheckItem>>({});
   
   const isExecutingRef = useRef(false);
+  const isQuickLocationSigningRef = useRef(false);
   const abortControllerRef = useRef<AbortController | null>(null);
   const photoPreviewUrlsRef = useRef<string[]>([]);
 
@@ -152,7 +175,7 @@ const SignDetail = () => {
     return `${name}代签`;
   };
 
-  const loadClassmateSignStates = async (students: Classmate[]) => {
+  const loadClassmateSignStates = useCallback(async (students: Classmate[]) => {
     if (!activity || students.length === 0) {
       setClassmateSignStates({});
       return;
@@ -171,7 +194,63 @@ const SignDetail = () => {
     }, {});
 
     setClassmateSignStates(nextStates);
+  }, [activity, currentUser?.uid]);
+
+  const loadSignLocations = async () => {
+    setIsLoadingLocations(true);
+    setLocationLoadError('');
+    try {
+      const response = await client.get<ApiResponse<SignLocation[]>>('/sign/locations');
+      setSignLocations(response.data.data || []);
+    } catch (error) {
+      setLocationLoadError(getErrorMessage(error, '获取签到地点失败'));
+    } finally {
+      setIsLoadingLocations(false);
+    }
   };
+  const savePersonalLocation = async (name: string, address: string) => {
+    const point = selectedMapPoint ?? selectedLocation;
+    if (!point) throw new Error('请先选择地图点或已有地点。');
+    const response = await client.post<ApiResponse<SignLocation>>('/sign/locations/personal', {
+      name, address, latitude: point.latitude, longitude: point.longitude,
+    });
+    const saved = { ...response.data.data, is_personal: true };
+    setSignLocations(previous => [...previous.filter(item => item.id !== saved.id), saved]);
+    setSelectedLocation(saved);
+    setSelectedMapPoint(null);
+    toast.success('已保存到当前账号的个人常用地点');
+  };
+  const deletePersonalLocation = async (locationToDelete: SignLocation) => {
+    await client.delete(`/sign/locations/personal/${locationToDelete.id}`);
+    setSignLocations(previous => previous.filter(item => item.id !== locationToDelete.id));
+    if (selectedLocation?.id === locationToDelete.id) setSelectedLocation(null);
+    toast.success('已删除个人常用地点');
+  };
+  const selectMapPoint = (point: Point) => {
+    const epoch = locationSelectionEpoch.current;
+    if (epoch !== locationSelectionEpoch.current) return;
+    setSelectedLocation(null);
+    setSelectedMapPoint(point);
+    setIsLocationMapOpen(false);
+  };
+  const selectNearestLocation = async (point: Point) => {
+    const epoch = locationSelectionEpoch.current;
+    const response = await client.get<ApiResponse<SignLocation[]>>('/sign/locations');
+    if (epoch !== locationSelectionEpoch.current) return;
+    const enabled = response.data.data || [];
+    setSignLocations(enabled);
+    const matched = nearestEnabledLocation(enabled, point);
+    if (!matched) throw new Error('附近150米内没有已启用地点，请手动选择列表中的地点或使用地图选点。');
+    setSelectedLocation(matched);
+    setSelectedMapPoint(null);
+    setIsLocationMapOpen(false);
+    setIsLocationPickerOpen(false);
+  };
+
+  useEffect(() => {
+    if (!activity || !requiresLocation) return;
+    loadSignLocations();
+  }, [activity, requiresLocation]);
 
   useEffect(() => {
     if (!activity) {
@@ -187,14 +266,14 @@ const SignDetail = () => {
         setClassmates(data);
         setSelectedUids(data.map(c => c.uid));
         await loadClassmateSignStates(data);
-      } catch (error: any) {
-        toast.error(error.message || '获取同学列表失败');
+      } catch (error) {
+        toast.error(getErrorMessage(error, '获取同学列表失败'));
       } finally {
         setIsLoadingClassmates(false);
       }
     };
     fetchClassmates();
-  }, [activity, navigate]);
+  }, [activity, navigate, loadClassmateSignStates]);
 
   const toggleClassmate = (uid: number) => {
     setSelectedUids(prev => prev.includes(uid) ? prev.filter(id => id !== uid) : [...prev, uid]);
@@ -252,21 +331,37 @@ const SignDetail = () => {
     setPhotoPreviewUrls([]);
   };
 
-  const handleExecute = async () => {
+  const photoObjectIDCache = useRef<Map<File, string>>(new Map());
+  const ensurePhotoObjectID = async (file: File, signal?: AbortSignal) => {
+    const cached = photoObjectIDCache.current.get(file);
+    if (cached) return cached;
+    const formData = new FormData();
+    formData.append('file', file);
+    const response = await client.post<ApiResponse<{ object_id: string }>>('/sign/photo/upload', formData, { signal, timeout: LONG_REQUEST_TIMEOUT });
+    const objectID = response.data.data?.object_id;
+    if (!objectID) throw new Error('照片上传失败，请重试');
+    photoObjectIDCache.current.set(file, objectID);
+    return objectID;
+  };
+
+  const handleExecute = async (locationOverride?: SignLocation, deviceLocation?: GPSPreview, allowDuringQuickLocationSign = false, mapPointOverride?: Point) => {
+    if (!activity || isExecutingRef.current || (isQuickLocationSigningRef.current && !allowDuringQuickLocationSign)) return;
     const selectedPhotoFiles = [...photoFiles];
+    const locationForExecution = locationOverride ?? selectedLocation;
+    const mapPointForExecution = deviceLocation ? undefined : mapPointOverride ?? selectedMapPoint;
 
     if ((activity.sign_type === 3 || activity.sign_type === 5) && (!signCode || signCode.length < 4)) {
       toast.error('请输入正确位数的签到码 / 手势');
       return;
     }
 
-    if (activity.sign_type === 4 && (!lat || !lng)) {
-      toast.error('请先选择签到地点');
+    if (requiresLocation && !locationForExecution && !deviceLocation && !mapPointForExecution) {
+      toast.error('该签到要求位置验证，请先选择签到地点');
       return;
     }
 
-    if (isPhotoSign && selectedPhotoFiles.length === 0) {
-      toast.error('请先拍照或选择照片');
+    if (requiresPhoto && selectedPhotoFiles.length === 0) {
+      toast.error('该签到还要求人脸/拍照验证，请先拍照或选择照片');
       return;
     }
 
@@ -278,18 +373,18 @@ const SignDetail = () => {
     abortControllerRef.current = new AbortController();
 
     const targetUids = Array.from(new Set([currentUser?.uid, ...selectedUids].filter(Boolean) as number[]));
-    const photoAssignments = isPhotoSign ? buildPhotoAssignments(targetUids, selectedPhotoFiles) : new Map<number, File>();
-    const initialStatuses: Record<number, any> = {};
+    const photoAssignments = requiresPhoto ? buildPhotoAssignments(targetUids, selectedPhotoFiles) : new Map<number, File>();
+    const initialStatuses: Record<number, Partial<SignStatusMessage>> = {};
     targetUids.forEach(uid => initialStatuses[uid] = { status: 'pending', message: '等待中' });
     setSignStatuses(initialStatuses);
 
     try {
-      const checkResp = await client.post<ApiResponse<{ items: any[] }>>('/sign/check', {
+      const checkResp = await client.post<ApiResponse<{ items: SignCheckItem[] }>>('/sign/check', {
         activity_id: activity.active_id,
         user_ids: selectedUids
       });
 
-      const checkItems = checkResp.data.data.items as SignCheckItem[];
+      const checkItems = checkResp.data.data.items;
       setClassmateSignStates(prev => {
         const next = { ...prev };
         checkItems.forEach(item => {
@@ -340,17 +435,33 @@ const SignDetail = () => {
               continue;
             }
 
-            const special_params: Record<string, any> = {};
+            const special_params: Record<string, unknown> = {};
             if (activity.sign_type === 3 || activity.sign_type === 5) special_params.sign_code = signCode;
-            else if (activity.sign_type === 4) {
-              special_params.latitude = lat;
-              special_params.longitude = lng;
-              special_params.description = locationStr;
-            }
 
+            const executeBody = {
+              activity_id: activity.active_id, target_uid: uid, sign_type: activity.sign_type,
+              course_id: activity.course_id, class_id: activity.class_id, if_refresh_ewm: activity.if_refresh_ewm,
+              require_range: !!activity.if_get_range,
+              location_id: requiresLocation && !deviceLocation && !mapPointForExecution ? locationForExecution?.id : undefined,
+              location_mode: requiresLocation && deviceLocation ? 'device_gps'
+                : requiresLocation && mapPointForExecution ? 'map_pick' : undefined,
+              device_location: requiresLocation && deviceLocation ? {
+                latitude: deviceLocation.point.latitude,
+                longitude: deviceLocation.point.longitude,
+                accuracy: deviceLocation.accuracy,
+                captured_at: deviceLocation.captured_at,
+                coordinate_system: deviceLocation.coordinate_system,
+              } : undefined,
+              map_location: requiresLocation && mapPointForExecution ? {
+                latitude: mapPointForExecution.latitude,
+                longitude: mapPointForExecution.longitude,
+                coordinate_system: 'GCJ-02',
+              } : undefined,
+            };
 
-            const execResp = isPhotoSign && assignedPhotoFile
-              ? await client.post<ApiResponse<any>>('/sign/photo', (() => {
+            let execResp;
+            if (requiresPhoto && assignedPhotoFile) {
+              if (isPhotoSign) {
                 const formData = new FormData();
                 formData.append('activity_id', String(activity.active_id));
                 formData.append('course_id', String(activity.course_id));
@@ -358,17 +469,27 @@ const SignDetail = () => {
                 formData.append('target_uid', String(uid));
                 formData.append('if_refresh_ewm', String(activity.if_refresh_ewm));
                 formData.append('file', assignedPhotoFile);
-                return formData;
-              })(), {
-                signal: abortControllerRef.current?.signal
-              })
-              : await client.post<ApiResponse<any>>('/sign/execute', {
-                activity_id: activity.active_id, target_uid: uid, sign_type: activity.sign_type,
-                course_id: activity.course_id, class_id: activity.class_id, if_refresh_ewm: activity.if_refresh_ewm,
-                special_params
+                execResp = await client.post<ApiResponse<SignExecuteResult>>('/sign/photo', formData, {
+                  signal: abortControllerRef.current?.signal, timeout: LONG_REQUEST_TIMEOUT,
+                });
+              } else {
+                // 手势/签到码/位置签到叠加人脸验证时：先上传照片换 object_id，再随签到一起提交。
+                const objectID = await ensurePhotoObjectID(assignedPhotoFile, abortControllerRef.current?.signal);
+                execResp = await client.post<ApiResponse<SignExecuteResult>>('/sign/execute', {
+                  ...executeBody,
+                  special_params: { ...special_params, object_id: objectID },
+                }, {
+                  signal: abortControllerRef.current?.signal, timeout: LONG_REQUEST_TIMEOUT,
+                });
+              }
+            } else {
+              execResp = await client.post<ApiResponse<SignExecuteResult>>('/sign/execute', {
+                ...executeBody,
+                special_params,
               }, {
-                signal: abortControllerRef.current?.signal
+                signal: abortControllerRef.current?.signal, timeout: LONG_REQUEST_TIMEOUT,
               });
+            }
 
             const res = execResp.data.data;
             if (res.success || res.already_signed) {
@@ -389,9 +510,9 @@ const SignDetail = () => {
             }
             lastError = res.message || '签到失败';
             setSignStatuses(prev => ({ ...prev, [uid]: { ...prev[uid], message: lastError } }));
-          } catch (err: any) {
-            if (err.name === 'CanceledError' || err.name === 'AbortError') return;
-            lastError = err.message || '网络连接异常';
+          } catch (err) {
+            if (isCancellationError(err)) return;
+            lastError = getErrorMessage(err, '网络连接异常');
             setSignStatuses(prev => ({ ...prev, [uid]: { ...prev[uid], message: lastError } }));
           }
 
@@ -417,9 +538,9 @@ const SignDetail = () => {
           }
         }
       }));
-    } catch (error: any) {
-      if (error.name !== 'CanceledError' && error.name !== 'AbortError') {
-        toast.error(error.message || '执行过程出错');
+    } catch (error) {
+      if (!isCancellationError(error)) {
+        toast.error(getErrorMessage(error, '执行过程出错'));
       }
     } finally {
       if (isExecutingRef.current) {
@@ -430,20 +551,26 @@ const SignDetail = () => {
     }
   };
 
-  if (!activity) return null;
+  const handleQuickLocationSign = async () => {
+    if (isQuickLocationSigningRef.current || isExecutingRef.current || isMapBusy) return;
 
-  const getSignTypeName = () => {
-    if (isPhotoSign) return '拍照签到';
-
-    switch (activity.sign_type) {
-      case 0: return '普通签到';
-      case 2: return '二维码签到';
-      case 3: return '手势签到';
-      case 4: return '位置签到';
-      case 5: return '签到码签到';
-      default: return '其他签到';
+    isQuickLocationSigningRef.current = true;
+    setIsQuickLocationSigning(true);
+    try {
+      const preview = await captureLocationPreview('/sign/locations/coordinate-preview');
+      if (preview.poor_accuracy) {
+        toast('定位精度差于50米，仍将使用本次设备坐标签到。');
+      }
+      await handleExecute(undefined, preview, true);
+    } catch (error) {
+      toast.error(getErrorMessage(error, '定位或签到失败，请重试。'));
+    } finally {
+      isQuickLocationSigningRef.current = false;
+      setIsQuickLocationSigning(false);
     }
   };
+
+  if (!activity) return null;
 
   const getSignIcon = (size: number = 24) => {
     if (isPhotoSign) return <Camera size={size} />;
@@ -475,7 +602,7 @@ const SignDetail = () => {
           <ChevronLeft size={24} />
         </button>
         <div className="ml-2 flex-1 min-w-0 relative z-10">
-          <h2 className="font-bold text-slate-900 truncate">{getSignTypeName()}</h2>
+          <h2 className="font-bold text-slate-900 leading-snug break-words">{describeSignRules(activity)}</h2>
           <p className="text-[10px] font-medium text-slate-400 truncate tracking-wide">{activity.course_name}</p>
         </div>
         <div className="absolute -right-8 -bottom-4 text-blue-600/10 pointer-events-none transform rotate-12">
@@ -488,7 +615,7 @@ const SignDetail = () => {
         <div className="flex items-center justify-between px-1 mt-1">
           <div className="flex items-center gap-4 min-w-0">
             <div className="w-14 h-14 bg-slate-100 rounded-2xl overflow-hidden shrink-0 shadow-sm border border-white">
-              {course?.icon ? <img src={course.icon} className="w-full h-full object-cover" referrerPolicy="no-referrer" /> : <div className="w-full h-full flex items-center justify-center text-slate-300"><BookOpen size={24} /></div>}
+              {course?.icon ? <RemoteImage src={course.icon} alt={course.course_name} className="w-full h-full" /> : <div className="w-full h-full flex items-center justify-center text-slate-300"><BookOpen size={24} /></div>}
             </div>
             <div className="space-y-0.5 min-w-0">
               <h2 className="text-lg font-black text-slate-900 tracking-tight truncate leading-tight">{activity.activity_name}</h2>
@@ -509,37 +636,75 @@ const SignDetail = () => {
         </div>
 
         {/* Integrated Panel */}
-        <div className="bg-white rounded-[2rem] shadow-xl shadow-blue-900/5 border border-slate-100 overflow-hidden flex flex-col">
+        {activity.need_face && (
+          <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-xs leading-relaxed text-red-700">
+            该签到由教师开启了<strong>人脸验证（活体）</strong>，验证由学习通客户端完成，网页无法代签。请直接用学习通 App 签到；本页仅可查看活动信息与位置。
+          </div>
+        )}
+        <div className={`bg-white rounded-[2rem] shadow-xl shadow-blue-900/5 border border-slate-100 overflow-hidden flex flex-col ${activity.need_face ? 'opacity-60 pointer-events-none' : ''}`}>
           <div className="p-5 pb-4">
             {activity.sign_type === 3 && <GestureInput value={signCode} onChange={setSignCode} />}
             {activity.sign_type === 5 && <PinInput value={signCode} onChange={setSignCode} />}
-            {activity.sign_type === 4 && <LocationInput name={LOCATION_PRESETS.find((p: any) => p.lat === lat)?.name || ''} description={locationStr} onOpen={() => setIsLocationPickerOpen(true)} />}
-            {activity.sign_type === 2 && <QrInput />}
-            {isPhotoSign && (
+            {requiresLocation && (
+              <>
+                <div className="location-ui mb-5 grid grid-cols-1 gap-3 sm:grid-cols-2" role="group" aria-label="位置签到主操作">
+                  <button
+                    type="button"
+                    onClick={handleQuickLocationSign}
+                    disabled={isExecuting || isQuickLocationSigning || isMapBusy}
+                    className="loc-primary flex-col items-start! px-4! py-4! text-left"
+                  >
+                    <LocateFixed size={21} /><span>{isQuickLocationSigning ? '正在定位并签到…' : '一键现场定位并签到'}</span><span className="text-[11px] font-normal text-blue-100">使用设备当前位置直接签到</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => { locationSelectionEpoch.current++; setIsLocationMapOpen(true); }}
+                    disabled={isExecuting || isQuickLocationSigning || isMapBusy}
+                    className="loc-method"
+                  >
+                    <MapIcon size={21} /><strong>打开地图选择位置</strong><span>搜索目标楼栋，核对后确认签到</span>
+                  </button>
+                </div>
+                <LocationInput
+                  name={selectedMapPoint ? '地图选择点' : selectedLocation?.name || ''}
+                  description={selectedMapPoint
+                    ? `GCJ-02：纬度 ${selectedMapPoint.latitude}，经度 ${selectedMapPoint.longitude}`
+                    : selectedLocation?.address || (locationLoadError || (isLoadingLocations ? '正在加载地点…' : signLocations.length === 0 ? '暂无可用签到地点' : '点击选择地点'))}
+                  onOpen={() => { locationSelectionEpoch.current++; setIsLocationPickerOpen(true); }}
+                />
+                {locationLoadError && <p className="mt-2 text-xs text-red-500">{locationLoadError}</p>}
+                <p className="mt-3 text-xs leading-relaxed text-slate-500 flex gap-2"><Info size={14} className="shrink-0 mt-0.5" />现场定位和地图确认会使用本次坐标签到；常用地点需选中后点击“立即签到”。坐标不证明教师设定的签到范围。</p>
+              </>
+            )}
+            {activity.sign_type === 2 && <QrInput isDynamic={activity.if_refresh_ewm} />}
+            {requiresPhoto && (
               <PhotoInput 
                 files={photoFiles} 
                 previewUrls={photoPreviewUrls} 
-                disabled={isExecuting} 
+                disabled={isExecuting}
+                faceMode={requiresPhoto}
                 onAdd={handlePhotoAdd} 
                 onRemove={removePhoto} 
                 onClear={clearPhotos}
                 onOpenCamera={() => navigate('/photo-capture', { state: { activity, course, selectedUids, classmates, existingPhotos: photoFiles } })}
               />
             )}
-            {activity.sign_type === 0 && !isPhotoSign && <NormalInput />}
+            {activity.sign_type === 0 && !requiresPhoto && <NormalInput />}
           </div>
 
           <div className="px-5 py-4 bg-slate-50 border-t border-slate-100 mt-auto shrink-0">
             <button 
               onClick={activity.sign_type === 2 
                 ? () => navigate('/scanner', { state: { activity, course, selectedUids, classmates } }) 
-                : handleExecute
+                : () => handleExecute()
               }
-              disabled={isExecuting}
-              className={`w-full py-3.5 rounded-xl font-bold text-sm shadow-lg transition-all active:scale-[0.97] flex items-center justify-center gap-3 ${isExecuting ? 'bg-blue-400 text-white shadow-none' : 'bg-blue-600 text-white hover:bg-blue-700 shadow-blue-100'}`}
+              disabled={isExecuting || isQuickLocationSigning || isMapBusy || activity.need_face}
+              className={`w-full py-3.5 rounded-xl font-bold text-sm shadow-lg transition-all active:scale-[0.97] flex items-center justify-center gap-3 ${isExecuting || activity.need_face ? 'bg-slate-300 text-slate-500 shadow-none' : 'bg-blue-600 text-white hover:bg-blue-700 shadow-blue-100'}`}
             >
               {isExecuting ? (
                 <Loader2 className="animate-spin" size={18} />
+              ) : activity.need_face ? (
+                <>需学习通 App 人脸验证</>
               ) : activity.sign_type === 2 ? (
                 <><QrCode size={18} /> 去扫码签到</>
               ) : (
@@ -567,7 +732,7 @@ const SignDetail = () => {
                 <div key={student.uid} onClick={() => toggleClassmate(student.uid)} className={`p-3 px-4 rounded-[1.25rem] border-2 transition-all flex items-center justify-between cursor-pointer active:scale-[0.98] ${selectedUids.includes(student.uid) ? 'border-blue-500 bg-blue-50/30' : 'border-slate-50 bg-white hover:border-slate-100 shadow-sm'}`}>
                   <div className="flex items-center gap-4">
                     <div className={`w-11 h-11 rounded-xl flex items-center justify-center text-white font-bold text-lg transition-colors shrink-0 overflow-hidden ${selectedUids.includes(student.uid) ? 'bg-blue-600' : 'bg-slate-400'}`}>
-                      {student.avatar ? <img src={student.avatar} referrerPolicy="no-referrer" className="w-full h-full object-cover" /> : student.name[0]}
+                      {student.avatar ? <RemoteImage src={student.avatar} alt={student.name} className="w-full h-full" /> : student.name[0]}
                     </div>
                     <div>
                       <div className="flex items-center gap-2 mb-0.5 min-w-0">
@@ -590,22 +755,24 @@ const SignDetail = () => {
       </div>
 
       <AnimatePresence>
+        {isLocationMapOpen && <LocationDialog title="地图选择签到位置" description="搜索目标位置，拖动地图微调后确认" onClose={closeLocationMap}>
+            <LocationCapture selectionMode initialPoint={selectedMapPoint ?? selectedLocation} onSelect={selectMapPoint} onBusy={setMapBusy} />
+        </LocationDialog>}
         {isLocationPickerOpen && (
-          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-50 flex items-end justify-center bg-slate-900/60 backdrop-blur-md p-0" onClick={() => setIsLocationPickerOpen(false)}>
-            <motion.div initial={{ y: '100%' }} animate={{ y: 0 }} exit={{ y: '100%' }} transition={{ type: 'spring', damping: 28, stiffness: 250 }} className="bg-white w-full max-w-[480px] rounded-t-[3rem] p-8 shadow-2xl overflow-hidden flex flex-col max-h-[80vh]" onClick={(e) => e.stopPropagation()}>
-              <div className="w-12 h-1.5 bg-slate-200 rounded-full mx-auto mb-8 shrink-0" />
-              <div className="flex items-center justify-between mb-6 shrink-0"><h3 className="text-xl font-bold text-slate-900">选择签到位置</h3><button onClick={() => setIsLocationPickerOpen(false)} className="w-8 h-8 flex items-center justify-center bg-slate-100 text-slate-400 rounded-full">✕</button></div>
-              <div className="flex-1 overflow-y-auto space-y-3 pr-1 pb-[calc(40px+var(--sab))] custom-scrollbar px-1">{LOCATION_PRESETS.map((p: any, i: number) => {
-                const isSelected = p.lat === lat && p.lng === lng;
-                return (
-                  <motion.div key={i} whileTap={{ scale: 0.98 }} onClick={() => { setLat(p.lat); setLng(p.lng); setLocationStr(p.description); setIsLocationPickerOpen(false); }} className={`p-5 rounded-[1.5rem] border-2 transition-all cursor-pointer flex items-center justify-between ${isSelected ? 'border-blue-500 bg-blue-50/30' : 'border-slate-50 bg-slate-50/50 hover:bg-white'}`}>
-                    <div className="flex-1 min-w-0 pr-4"><div className="font-bold text-slate-800 mb-0.5 text-sm">{p.name}</div><div className="text-[10px] text-slate-400 font-medium truncate">{p.description}</div></div>
-                    {isSelected && <CheckCircle2 size={20} className="text-blue-600 shrink-0" />}
-                  </motion.div>
-                );
-              })}</div>
-            </motion.div>
-          </motion.div>
+          <LocationDialog title="选择签到位置" description="从常用地点中选择，定位可按距离排序" onClose={closeLocationPicker}>
+                <SignLocationPicker
+                  locations={signLocations}
+                  selectedID={selectedLocation?.id}
+                  loading={isLoadingLocations}
+                  loadError={locationLoadError}
+                  savePoint={selectedMapPoint ?? (selectedLocation?.is_personal ? null : selectedLocation)}
+                  onReload={loadSignLocations}
+                  onSelect={item => { setSelectedLocation(item); setSelectedMapPoint(null); closeLocationPicker(); }}
+                  onNearest={selectNearestLocation}
+                  onSavePersonal={savePersonalLocation}
+                  onDeletePersonal={deletePersonalLocation}
+                />
+          </LocationDialog>
         )}
         {showProgress && (
           <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-[60] flex items-end justify-center p-0 bg-slate-900/60 backdrop-blur-md" onClick={() => setShowProgress(false)}>
