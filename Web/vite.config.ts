@@ -14,7 +14,7 @@ export default defineConfig({
     proxy: {
       // 代理 API 请求
       '/api': {
-        target: 'http://localhost:3030',
+        target: process.env.XBT_API_TARGET || 'http://127.0.0.1:3030',
         changeOrigin: true,
       },
     },

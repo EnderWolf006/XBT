@@ -1,6 +1,7 @@
 import React from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion } from 'framer-motion';
 import type { SignStatusMessage } from '../../types';
+import RemoteImage from '../RemoteImage';
 
 interface ProgressCardProps {
   name: string;
@@ -50,7 +51,7 @@ export const ProgressCard: React.FC<ProgressCardProps> = ({
       <div className="relative z-10 flex items-center space-x-3">
         <div className="w-12 h-12 rounded-xl overflow-hidden border-2 border-white shrink-0 shadow-sm bg-white">
           {avatar ? (
-            <img src={avatar} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+            <RemoteImage src={avatar} alt={name} className="w-full h-full" />
           ) : (
             <div className="w-full h-full bg-slate-100 flex items-center justify-center text-slate-300 font-bold text-lg">{name[0]}</div>
           )}
@@ -64,18 +65,10 @@ export const ProgressCard: React.FC<ProgressCardProps> = ({
               {isHost && <span className="text-[10px] text-slate-400 font-bold ml-1.5 uppercase tracking-tighter">(我)</span>}
             </div>
             
-            <div className="shrink-0 ml-2">
-              <AnimatePresence initial={false} mode="wait">
-                <motion.div 
-                  key={tagText}
-                  initial={{ opacity: 0, scale: 0.9 }}
-                  animate={{ opacity: 1, scale: 1 }}
-                  exit={{ opacity: 0, scale: 0.9 }}
-                  className="text-[12px] font-black px-1.5 py-0 rounded-md border-current border bg-white/80 whitespace-nowrap leading-normal"
-                >
-                  {tagText}
-                </motion.div>
-              </AnimatePresence>
+            <div className="shrink-0 ml-2" aria-live="polite" aria-atomic="true">
+              <div className="text-[12px] font-black px-1.5 py-0 rounded-md border-current border bg-white/80 whitespace-nowrap leading-normal">
+                {tagText}
+              </div>
             </div>
           </div>
 
@@ -85,19 +78,10 @@ export const ProgressCard: React.FC<ProgressCardProps> = ({
               {mobile}
             </div>
             
-            <div className="shrink-0 ml-4 max-w-[60%] text-right overflow-hidden">
-              <AnimatePresence initial={false} mode="wait">
-                <motion.div 
-                  key={message}
-                  initial={{ opacity: 0, x: 10 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  exit={{ opacity: 0, x: -10 }}
-                  className="text-[10px] font-black opacity-90 truncate tracking-tight"
-                  title={message}
-                >
-                  {message}
-                </motion.div>
-              </AnimatePresence>
+            <div className="shrink-0 ml-4 max-w-[60%] text-right overflow-hidden" aria-live="polite" aria-atomic="true">
+              <div className="text-[10px] font-black opacity-90 truncate tracking-tight" title={message}>
+                {message}
+              </div>
             </div>
           </div>
         </div>

@@ -42,7 +42,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   addAccount: (user, token) => {
     const { accounts } = get();
     const existingIndex = accounts.findIndex(a => a.user.uid === user.uid);
-    let newAccounts = [...accounts];
+    const newAccounts = [...accounts];
     
     if (existingIndex > -1) {
       newAccounts[existingIndex] = { user, token };

@@ -13,14 +13,16 @@ import (
 )
 
 type AuthHandler struct {
-	db     *gorm.DB
-	jwt    *service.JWTService
-	cc     *service.CredentialCrypto
-	xxtCli *xxt.Client
+	db           *gorm.DB
+	jwt          *service.JWTService
+	cc           *service.CredentialCrypto
+	xxtCli       *xxt.Client
+	publicAccess bool
+	publicAdmin  bool
 }
 
-func NewAuthHandler(db *gorm.DB, jwt *service.JWTService, cc *service.CredentialCrypto, xxtCli *xxt.Client) *AuthHandler {
-	return &AuthHandler{db: db, jwt: jwt, cc: cc, xxtCli: xxtCli}
+func NewAuthHandler(db *gorm.DB, jwt *service.JWTService, cc *service.CredentialCrypto, xxtCli *xxt.Client, publicAccess, publicAdmin bool) *AuthHandler {
+	return &AuthHandler{db: db, jwt: jwt, cc: cc, xxtCli: xxtCli, publicAccess: publicAccess, publicAdmin: publicAdmin}
 }
 
 func (h *AuthHandler) Login(c *gin.Context) {
@@ -30,7 +32,7 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		return
 	}
 
-	wl, allowed, err := h.resolveWhitelist(req.Mobile)
+	permission, allowed, err := h.loginPermission(req.Mobile)
 	if err != nil {
 		common.Fail(c, 500, err.Error())
 		return
@@ -58,7 +60,7 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		Name:             loginResult.Name,
 		Avatar:           loginResult.Avatar,
 		CredentialCipher: cipher,
-		Permission:       wl.Permission,
+		Permission:       permission,
 		LastLoginAt:      time.Now(),
 	}
 	if err := h.db.Where("uid = ?", user.UID).Assign(user).FirstOrCreate(&user).Error; err != nil {
@@ -82,6 +84,21 @@ func (h *AuthHandler) Login(c *gin.Context) {
 			"permission": user.Permission,
 		},
 	})
+}
+
+func (h *AuthHandler) loginPermission(mobile string) (int, bool, error) {
+	if h.publicAccess {
+		if h.publicAdmin {
+			return 2, true, nil
+		}
+		return 1, true, nil
+	}
+	wl, allowed, err := h.resolveWhitelist(mobile)
+	return wl.Permission, allowed, err
+}
+
+func (h *AuthHandler) PublicAccess() bool {
+	return h.publicAccess
 }
 
 func (h *AuthHandler) resolveWhitelist(mobile string) (model.Whitelist, bool, error) {

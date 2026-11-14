@@ -1,17 +1,21 @@
 import { HashRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { Toaster } from 'react-hot-toast';
 import Login from './pages/Login';
-import Lobby from './pages/Lobby';
-import Courses from './pages/Courses';
-import SignDetail from './pages/SignDetail';
-import Whitelist from './pages/Whitelist';
-import AccountManagement from './pages/AccountManagement';
-import FullScanner from './pages/FullScanner';
-import FullPhoto from './pages/FullPhoto';
-import ProtectedRoute from './components/ProtectedRoute';
-import { useEffect } from 'react';
+import ProtectedRoute, { AdminRoute } from './components/ProtectedRoute';
+import { lazy, Suspense, useEffect } from 'react';
+import { useAuthStore } from './store/auth';
+
+const Lobby = lazy(() => import('./pages/Lobby'));
+const Courses = lazy(() => import('./pages/Courses'));
+const SignDetail = lazy(() => import('./pages/SignDetail'));
+const Whitelist = lazy(() => import('./pages/Whitelist'));
+const SignLocations = lazy(() => import('./pages/SignLocations'));
+const AccountManagement = lazy(() => import('./pages/AccountManagement'));
+const FullScanner = lazy(() => import('./pages/FullScanner'));
+const FullPhoto = lazy(() => import('./pages/FullPhoto'));
 
 function App() {
+  const activeUid = useAuthStore(state => state.activeUid);
   useEffect(() => {
     const preventPagePinch = (event: TouchEvent) => {
       if (event.touches.length >= 2) {
@@ -53,20 +57,25 @@ function App() {
         }}
       />
       <div className="h-screen h-[100dvh] bg-slate-50 text-slate-900 font-sans selection:bg-blue-100 overflow-hidden min-h-0">
-        <div className="max-w-[480px] mx-auto h-full bg-white shadow-xl relative flex flex-col overflow-hidden min-h-0">
+        <div className="app-shell mx-auto h-full bg-white shadow-xl relative flex flex-col overflow-hidden min-h-0">
+          <Suspense fallback={<p role="status" className="p-6 text-center text-sm text-slate-500">正在加载页面…</p>}>
           <Routes>
             <Route path="/login" element={<Login />} />
             <Route element={<ProtectedRoute />}>
-              <Route path="/" element={<Lobby />} />
+              <Route path="/" element={<Lobby key={activeUid ?? 'signed-out'} />} />
               <Route path="/courses" element={<Courses />} />
               <Route path="/sign/:id" element={<SignDetail />} />
               <Route path="/admin/whitelist" element={<Whitelist />} />
+              <Route element={<AdminRoute />}>
+                <Route path="/admin/sign-locations" element={<SignLocations />} />
+              </Route>
               <Route path="/accounts" element={<AccountManagement />} />
               <Route path="/scanner" element={<FullScanner />} />
               <Route path="/photo-capture" element={<FullPhoto />} />
             </Route>
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
+          </Suspense>
         </div>
       </div>
     </HashRouter>

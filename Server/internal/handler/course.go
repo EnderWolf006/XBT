@@ -85,7 +85,7 @@ func isXXTAuthError(err error) bool {
 		return false
 	}
 	msg := strings.TrimSpace(err.Error())
-	return strings.Contains(msg, "账号或密码错误")
+	return strings.Contains(msg, "账号或密码错误") || strings.Contains(msg, "学习通登录已失效")
 }
 
 func (h *CourseHandler) UpdateSelection(c *gin.Context) {

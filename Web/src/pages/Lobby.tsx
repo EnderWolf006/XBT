@@ -24,6 +24,9 @@ import { useAuthStore } from '../store/auth';
 import { getChineseStringByDatetime } from '../utils/datetime';
 import type { ApiResponse, CourseActivities } from '../types';
 import PullToRefresh from '../components/PullToRefresh';
+import { getErrorMessage } from '../utils/errors';
+import RemoteImage from '../components/RemoteImage';
+import { describeSignRules } from '../utils/signRules';
 
 type PendingActivityEntry = {
   activity: CourseActivities['activities'][number];
@@ -33,7 +36,11 @@ type PendingActivityEntry = {
 const RefreshIndicator = ({ spinning }: { spinning: boolean }) => {
   const rafRef = useRef<number | null>(null);
   const angleRef = useRef(0);
-  const [angle, setAngle] = useState(0);
+  const iconRef = useRef<SVGSVGElement>(null);
+  const updateAngle = (angle: number) => {
+    angleRef.current = angle;
+    if (iconRef.current) iconRef.current.style.transform = `rotate(${angle}deg)`;
+  };
 
   const stopRaf = () => {
     if (rafRef.current !== null) {
@@ -50,7 +57,7 @@ const RefreshIndicator = ({ spinning }: { spinning: boolean }) => {
         const delta = now - last;
         last = now;
         angleRef.current = (angleRef.current + delta * 0.36) % 360;
-        setAngle(angleRef.current);
+        updateAngle(angleRef.current);
         rafRef.current = requestAnimationFrame(tick);
       };
       rafRef.current = requestAnimationFrame(tick);
@@ -61,7 +68,7 @@ const RefreshIndicator = ({ spinning }: { spinning: boolean }) => {
     const current = ((angleRef.current % 360) + 360) % 360;
     if (current < 0.5) {
       angleRef.current = 0;
-      setAngle(0);
+      updateAngle(0);
       return;
     }
 
@@ -73,13 +80,13 @@ const RefreshIndicator = ({ spinning }: { spinning: boolean }) => {
       const eased = 1 - Math.pow(1 - t, 3);
       const next = current + remain * eased;
       angleRef.current = next % 360;
-      setAngle(angleRef.current);
+      updateAngle(angleRef.current);
 
       if (t < 1) {
         rafRef.current = requestAnimationFrame(settle);
       } else {
         angleRef.current = 0;
-        setAngle(0);
+        updateAngle(0);
         rafRef.current = null;
       }
     };
@@ -89,7 +96,7 @@ const RefreshIndicator = ({ spinning }: { spinning: boolean }) => {
 
   useEffect(() => () => stopRaf(), []);
 
-  return <RefreshCw size={20} style={{ transform: `rotate(${angle}deg)` }} />;
+  return <RefreshCw ref={iconRef} size={20} />;
 };
 
 const Lobby = () => {
@@ -99,44 +106,148 @@ const Lobby = () => {
   // Initialize from cache if available
   const [activities, setActivities] = useState<CourseActivities[]>(() => {
     const cached = localStorage.getItem(`cached_activities_${activeUid}`);
-    return cached ? JSON.parse(cached) : [];
+    if (!cached) return [];
+    try {
+      const parsed: unknown = JSON.parse(cached);
+      return Array.isArray(parsed) ? parsed as CourseActivities[] : [];
+    } catch {
+      localStorage.removeItem(`cached_activities_${activeUid}`);
+      return [];
+    }
   });
 
   const [isLoading, setIsLoading] = useState(false);
+  const [activityError, setActivityError] = useState('');
+  const fetchingRef = useRef(false);
   const [expandedCourses, setExpandedCourses] = useState<Record<string, boolean>>({});
   const [now, setNow] = useState(Date.now());
   const [pendingEntry, setPendingEntry] = useState<PendingActivityEntry | null>(null);
+
+  // 已知活动 ID 集合：首次加载只登记不提醒，之后的差异才是"新签到"。
+  const knownActivityIdsRef = useRef<Set<number> | null>(null);
 
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(timer);
   }, []);
 
-  const fetchActivities = useCallback(async () => {
-    // Prevent multiple requests if already loading
-    if (isLoading) return;
-
-    setIsLoading(true);
+  const playNotifySound = useCallback(() => {
     try {
-      const response = await client.get<ApiResponse<CourseActivities[]>>('/sign/activities');
-      const data = response.data.data;
-      setActivities(data || []);
+      const Ctx = window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+      if (!Ctx) return;
+      const ctx = new Ctx();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(880, ctx.currentTime);
+      osc.frequency.setValueAtTime(1320, ctx.currentTime + 0.18);
+      gain.gain.setValueAtTime(0.0001, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.18, ctx.currentTime + 0.03);
+      gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.5);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start();
+      osc.stop(ctx.currentTime + 0.55);
+      window.setTimeout(() => { void ctx.close(); }, 900);
+    } catch {
+      // 浏览器限制自动播放时静默降级，不影响列表与 toast 提醒。
+    }
+  }, []);
+
+  const flashTitle = useCallback(() => {
+    const original = document.title;
+    if (original.startsWith('● ')) return;
+    document.title = '● 新签到';
+    window.setTimeout(() => {
+      document.title = original.replace(/^● /, '');
+    }, 12000);
+  }, []);
+
+  const noticeNewActivities = useCallback((data: CourseActivities[]) => {
+    const nowMs = Date.now();
+    const currentIds = new Set<number>();
+    const fresh: PendingActivityEntry[] = [];
+
+    data.forEach((course) => {
+      course.activities.forEach((activity) => {
+        currentIds.add(activity.active_id);
+        if (knownActivityIdsRef.current && !knownActivityIdsRef.current.has(activity.active_id)
+          && !activity.record_source_name && activity.end_time > nowMs) {
+          fresh.push({ activity, course });
+        }
+      });
+    });
+
+    knownActivityIdsRef.current = currentIds;
+    if (fresh.length === 0) return;
+
+    fresh.sort((a, b) => b.activity.start_time - a.activity.start_time);
+    fresh.forEach(({ activity, course }) => {
+      toast.success(
+        `新签到：${course.course_name} · ${activity.activity_name}（${describeSignRules(activity)}）${activity.need_face ? '｜需在学习通 App 完成人脸验证' : ''}`,
+        { id: `new-activity-${activity.active_id}`, duration: 10000 },
+      );
+    });
+    playNotifySound();
+    flashTitle();
+    if (fresh.length > 1) {
+      toast(`共 ${fresh.length} 条新签到，下拉列表查看`, { icon: '🔔', duration: 8000, id: 'new-activity-summary' });
+    }
+  }, [flashTitle, playNotifySound]);
+
+  const fetchActivities = useCallback(async (options?: { silent?: boolean; force?: boolean }) => {
+    // Prevent multiple requests if already loading
+    if (fetchingRef.current) return;
+
+    const silent = options?.silent === true;
+    fetchingRef.current = true;
+    if (!silent) setIsLoading(true);
+    try {
+      const response = await client.get<ApiResponse<CourseActivities[]>>('/sign/activities',
+        options?.force ? { headers: { 'Cache-Control': 'no-cache' } } : undefined);
+      if (useAuthStore.getState().activeUid !== activeUid) return;
+      const data = response.data.data || [];
+      setActivities(data);
+      setActivityError('');
 
       // Update cache
-      if (activeUid && data) {
+      if (activeUid) {
         localStorage.setItem(`cached_activities_${activeUid}`, JSON.stringify(data));
       }
-    } catch (error: any) {
-      toast.error(error.message || '获取签到活动失败');
+      noticeNewActivities(data);
+    } catch (error) {
+      if (useAuthStore.getState().activeUid !== activeUid) return;
+      setActivityError(getErrorMessage(error, '活动刷新失败，当前显示上次加载结果'));
+      if (!silent) toast.error(getErrorMessage(error, '获取签到活动失败'));
     } finally {
-      setIsLoading(false);
+      fetchingRef.current = false;
+      if (!silent) setIsLoading(false);
     }
-  }, [isLoading, activeUid]);
+  }, [activeUid, noticeNewActivities]);
 
   useEffect(() => {
+    // 换账号后重新建立"已知活动"基线，避免把另一账号的活动当成新签到。
+    knownActivityIdsRef.current = null;
     // Initial fetch
     fetchActivities();
-  }, [activeUid]);
+  }, [fetchActivities]);
+
+  // 后台轮询：定位/人脸签到通知时间窗口很短，仅靠进入页面拉一次会漏掉。
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        void fetchActivities({ silent: true });
+      }
+    }, 15000);
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') void fetchActivities({ silent: true });
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, [fetchActivities]);
 
   const toggleCourse = (courseId: number, classId: number) => {
     const key = `${courseId}-${classId}`;
@@ -146,10 +257,8 @@ const Lobby = () => {
     }));
   };
 
-  const isPhotoActivity = (activity: CourseActivities['activities'][number]) => activity.sign_type === 0 && activity.if_photo;
-
   const getSignTypeIcon = (activity: CourseActivities['activities'][number]) => {
-    if (isPhotoActivity(activity)) return <Camera size={18} />;
+    if (activity.sign_type === 0 && activity.if_photo) return <Camera size={18} />;
 
     switch (activity.sign_type) {
       case 2: return <QrCode size={18} />;
@@ -157,18 +266,6 @@ const Lobby = () => {
       case 4: return <MapPin size={18} />;
       case 5: return <RectangleEllipsis size={18} />;
       default: return <CheckCircle2 size={18} />;
-    }
-  };
-
-  const getSignTypeName = (activity: CourseActivities['activities'][number]) => {
-    if (isPhotoActivity(activity)) return '拍照';
-
-    switch (activity.sign_type) {
-      case 2: return '二维码';
-      case 3: return '手势';
-      case 4: return '位置';
-      case 5: return '签到码';
-      default: return '普通';
     }
   };
 
@@ -203,7 +300,7 @@ const Lobby = () => {
           >
             <div className="w-12 h-12 rounded-xl bg-slate-100 overflow-hidden border-2 border-white shadow-sm">
               {user?.avatar ? (
-                <img src={user.avatar} alt={user.name} referrerPolicy="no-referrer" className="w-full h-full object-cover" />
+                <RemoteImage src={user.avatar} alt={user.name} loading="eager" className="w-full h-full" />
               ) : (
                 <div className="w-full h-full flex items-center justify-center text-slate-400">
                   <UserIcon size={24} />
@@ -229,21 +326,31 @@ const Lobby = () => {
             </motion.button>
             <motion.button
               whileTap={{ scale: 0.92 }}
-              onClick={fetchActivities}
+              onClick={() => { void fetchActivities({ force: true }); }}
               className="p-2 text-slate-600 hover:bg-slate-50 rounded-lg transition-colors"
               title="刷新活动"
             >
               <RefreshIndicator spinning={isLoading} />
             </motion.button>
             {user && user.permission >= 2 && (
-              <motion.button
-                whileTap={{ scale: 0.92 }}
-                onClick={() => navigate('/admin/whitelist')}
-                className="p-2 text-slate-600 hover:bg-slate-50 rounded-lg transition-colors"
-                title="白名单管理"
-              >
-                <ShieldCheck size={20} />
-              </motion.button>
+              <>
+                <motion.button
+                  whileTap={{ scale: 0.92 }}
+                  onClick={() => navigate('/admin/whitelist')}
+                  className="p-2 text-slate-600 hover:bg-slate-50 rounded-lg transition-colors"
+                  title="白名单管理"
+                >
+                  <ShieldCheck size={20} />
+                </motion.button>
+                <motion.button
+                  whileTap={{ scale: 0.92 }}
+                  onClick={() => navigate('/admin/sign-locations')}
+                  className="p-2 text-slate-600 hover:bg-slate-50 rounded-lg transition-colors"
+                  title="签到地点管理"
+                >
+                  <MapPin size={20} />
+                </motion.button>
+              </>
             )}
           </div>
         </div>
@@ -251,11 +358,14 @@ const Lobby = () => {
 
       {/* Main Content */}
       <PullToRefresh
-        onRefresh={fetchActivities}
+        onRefresh={() => fetchActivities({ force: true })}
         isRefreshing={isLoading}
         className="p-4"
       >
         <div className="pb-[calc(80px+var(--sab))] space-y-4">
+          {activityError && <p role="alert" className="rounded-xl bg-amber-50 p-3 text-sm text-amber-800">
+            {activityError}。列表可能不是最新，请刷新后核对。
+          </p>}
           {isLoading && activities.length === 0 ? (
             <div className="space-y-4">
               {[1, 2, 3].map((i) => (
@@ -297,7 +407,7 @@ const Lobby = () => {
                         <div className="relative flex-shrink-0">
                           <div className="w-12 h-12 rounded-xl bg-slate-100 overflow-hidden">
                             {course.icon ? (
-                              <img src={course.icon} referrerPolicy="no-referrer" className="w-full h-full object-cover" />
+                              <RemoteImage src={course.icon} alt={course.course_name} className="w-full h-full" />
                             ) : (
                               <div className="w-full h-full flex items-center justify-center text-slate-300">
                                 <BookOpen size={20} />
@@ -375,10 +485,17 @@ const Lobby = () => {
                                       </div>
                                       <div className="flex-1 min-w-0">
                                         <div className={`font-bold text-sm truncate text-slate-900`}>{activity.activity_name}</div>
-                                        <div className="flex items-center space-x-2 mt-0.5 overflow-hidden">
-                                          <span className={`text-[10px] px-1.5 py-0.5 bg-blue-100 text-blue-700 rounded-md font-medium uppercase flex-shrink-0`}>
-                                            {getSignTypeName(activity)}
+                                        <div className="mt-1">
+                                          <span className="sign-rule-label" aria-label={`签到要求：${describeSignRules(activity)}`}>
+                                            {describeSignRules(activity)}
                                           </span>
+                                        </div>
+                                        <div className="flex flex-wrap items-center gap-1.5 mt-1.5">
+                                          {activity.need_face && (
+                                            <span className="text-[10px] px-1.5 py-0.5 bg-red-100 text-red-700 rounded-md font-medium">
+                                              需在学习通 App 验证
+                                            </span>
+                                          )}
                                           {shouldHighlight && (
                                             <span className="text-[10px] px-1.5 py-0.5 bg-purple-100 text-purple-700 rounded-md font-medium whitespace-nowrap flex-shrink-0">
                                               进行中 {countdownStr}

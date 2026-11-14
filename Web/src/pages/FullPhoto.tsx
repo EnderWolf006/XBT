@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { ChevronLeft, Camera, EyeOff, Eye, Loader2 } from 'lucide-react';
@@ -11,7 +11,7 @@ type NativeCameraBridge = {
   setLensFacing?: (mode: 'user' | 'environment') => void;
   zoomByPinchDelta?: (delta: number) => number;
   syncPunchHole?: (left: number, top: number, width: number, height: number) => void;
-  takePhoto?: () => void;
+  takePhoto?: () => unknown;
 };
 
 type WindowWithBridge = Window & {
@@ -32,7 +32,10 @@ const FullPhoto = () => {
   const navigate = useNavigate();
   const location = useLocation();
   
-  const { activity, existingPhotos } = location.state || {};
+  const { activity, existingPhotos, returnTo } = location.state || {};
+  // 人脸/拍照验证：默认前置摄像头，并提示由学习通完成人脸比对。
+  const faceMode = !!activity?.if_photo;
+  const backTarget = typeof returnTo === 'string' && returnTo ? returnTo : (activity ? `/sign/${activity.active_id}` : -1);
 
   useEffect(() => {
     if (!activity) {
@@ -50,7 +53,7 @@ const FullPhoto = () => {
   const [showLoadingOverlay, setShowLoadingOverlay] = useState(true);
   const [isCapturing, setIsCapturing] = useState(false);
 
-  const [cameras, setCameras] = useState<any[]>([]);
+  const [cameras, setCameras] = useState<Array<{ id: string; label: string; facing?: 'user' | 'environment' }>>([]);
   const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null);
   const [showCameraList, setShowCameraList] = useState(false);
 
@@ -63,6 +66,11 @@ const FullPhoto = () => {
   const [nativePreviewReady, setNativePreviewReady] = useState(false);
   const nativePreviewReadyRef = useRef(false);
   const selectedDeviceIdRef = useRef<string | null>(null);
+  const capturedPreviewsRef = useRef(capturedPreviews);
+
+  useEffect(() => {
+    capturedPreviewsRef.current = capturedPreviews;
+  }, [capturedPreviews]);
 
   const getNativeBridge = (): NativeCameraBridge | null => {
     const bridge = (window as WindowWithBridge).XBTCameraBridge;
@@ -75,22 +83,22 @@ const FullPhoto = () => {
     return bridge;
   };
 
-  const setNativeLensFacing = (deviceId: string | null) => {
+  const setNativeLensFacing = useCallback((deviceId: string | null) => {
     const bridge = getNativeBridge();
     if (!bridge || typeof bridge.setLensFacing !== 'function' || !deviceId) return;
     const selected = cameras.find((c) => c.id === deviceId);
     const label = (selected?.label || '').toLowerCase();
     const facing: 'user' | 'environment' = /front|user|前置|自拍/.test(label) ? 'user' : 'environment';
     bridge.setLensFacing(facing);
-  };
+  }, [cameras]);
 
-  const syncReaderPunchHole = () => {
+  const syncReaderPunchHole = useCallback(() => {
     const bridge = getNativeBridge();
     const reader = readerRef.current;
     if (!bridge || !reader || typeof bridge.syncPunchHole !== 'function') return;
     const rect = reader.getBoundingClientRect();
     bridge.syncPunchHole(rect.left, rect.top, rect.width, rect.height);
-  };
+  }, []);
 
   useEffect(() => {
     nativePreviewReadyRef.current = nativePreviewReady;
@@ -102,7 +110,7 @@ const FullPhoto = () => {
 
   useEffect(() => {
     setNativeLensFacing(selectedDeviceId);
-  }, [selectedDeviceId, cameras]);
+  }, [selectedDeviceId, setNativeLensFacing]);
 
 
   useEffect(() => {
@@ -112,34 +120,41 @@ const FullPhoto = () => {
     setNativePreviewReady(false);
     
     if (bridge) {
-      setSelectedDeviceId('__native_environment__');
+      setSelectedDeviceId(faceMode ? '__native_user__' : '__native_environment__');
       setCameras([
-        { id: '__native_environment__', label: '后置摄像头' },
-        { id: '__native_user__', label: '前置摄像头' },
+        { id: '__native_environment__', label: '后置摄像头', facing: 'environment' },
+        { id: '__native_user__', label: '前置摄像头', facing: 'user' },
       ]);
     } else {
       const initWebCamera = async () => {
         try {
           if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
             const stream = await navigator.mediaDevices.getUserMedia({ 
-              video: { facingMode: { ideal: 'environment' } } 
+              video: { facingMode: { ideal: faceMode ? 'user' : 'environment' } } 
             });
             stream.getTracks().forEach(t => t.stop());
           }
           
           const devices = await navigator.mediaDevices.enumerateDevices();
           const videoDevices = devices.filter(d => d.kind === 'videoinput');
-          const normalized = videoDevices.map((d, i) => ({ 
-            id: d.deviceId, 
-            label: getFriendlyCameraLabel(d.label, i) 
-          }));
+          const normalized = videoDevices.map((d, i) => {
+            const raw = d.label.toLowerCase();
+            const facing: 'user' | 'environment' = /back|rear|environment|后置|后面|背面/.test(raw)
+              ? 'environment'
+              : (/front|user|face|前置|前面|正面/.test(raw) || i === 0 ? 'user' : 'environment');
+            return { 
+              id: d.deviceId, 
+              label: getFriendlyCameraLabel(d.label, i),
+              facing,
+            };
+          });
           
           setCameras(normalized);
           if (normalized.length > 0) {
-            const back = normalized.find(d => 
-              /back|rear|environment|后置|后面|背面/.test(d.label.toLowerCase())
-            );
-            setSelectedDeviceId(back ? back.id : normalized[normalized.length - 1].id);
+            const preferred = faceMode
+              ? normalized.find(d => d.facing === 'user')
+              : normalized.find(d => d.facing === 'environment');
+            setSelectedDeviceId((preferred ?? normalized[normalized.length - 1]).id);
           } else {
             setIsCameraReady(true);
             toast.error("未检测到摄像头设备");
@@ -152,7 +167,7 @@ const FullPhoto = () => {
       };
       initWebCamera();
     }
-  }, []);
+  }, [faceMode]);
 
   useEffect(() => {
     if (isCameraReady) {
@@ -183,7 +198,7 @@ const FullPhoto = () => {
       const bridge = getNativeBridge();
       bridge?.setScannerActive?.(false);
       if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
-      capturedPreviews.forEach(url => URL.revokeObjectURL(url));
+      capturedPreviewsRef.current.forEach(url => URL.revokeObjectURL(url));
     };
   }, []);
 
@@ -222,7 +237,7 @@ const FullPhoto = () => {
       const bridge = getNativeBridge();
       bridge?.setScannerActive?.(false);
     };
-  }, [activity]);
+  }, [activity, setNativeLensFacing]);
 
   useEffect(() => {
     if (!isNativeBridgeMode) return;
@@ -357,12 +372,13 @@ const FullPhoto = () => {
       reader.removeEventListener('touchmove', handleTouchMove);
       reader.removeEventListener('touchend', handleTouchEnd);
     };
-  }, [isNativeBridgeMode, isCameraReady]);
+  }, [isNativeBridgeMode, isCameraReady, syncReaderPunchHole]);
 
   useEffect(() => {
     if (isNativeBridgeMode || !selectedDeviceId) return;
 
     let isMounted = true;
+    let ownedStream: MediaStream | null = null;
     const startCamera = async () => {
       setIsCameraReady(false);
       try {
@@ -372,7 +388,7 @@ const FullPhoto = () => {
             deviceId: { exact: selectedDeviceId }, 
             width: { ideal: 1280 }, 
             height: { ideal: 720 },
-            facingMode: /back|rear|environment/.test(cameras.find(c => c.id === selectedDeviceId)?.label.toLowerCase() || '') ? 'environment' : 'user'
+            facingMode: cameras.find(c => c.id === selectedDeviceId)?.facing ?? (faceMode ? 'user' : 'environment')
           }
         });
         if (!isMounted) {
@@ -380,6 +396,7 @@ const FullPhoto = () => {
           return;
         }
         streamRef.current = stream;
+        ownedStream = stream;
         if (videoRef.current) {
           videoRef.current.srcObject = stream;
           videoRef.current.onplaying = () => {
@@ -399,8 +416,11 @@ const FullPhoto = () => {
     };
 
     startCamera();
-    return () => { isMounted = false; };
-  }, [selectedDeviceId, isNativeBridgeMode]);
+    return () => {
+      isMounted = false;
+      ownedStream?.getTracks().forEach(track => track.stop());
+    };
+  }, [selectedDeviceId, isNativeBridgeMode, cameras, faceMode]);
 
   const handleCapture = async () => {
     if (isCapturing) return;
@@ -412,7 +432,7 @@ const FullPhoto = () => {
       if (isNativeBridgeMode) {
         const bridge = getNativeBridge();
         if (bridge && typeof bridge.takePhoto === 'function') {
-          const possibleResult = (bridge.takePhoto as any)();
+          const possibleResult = bridge.takePhoto();
           
           if (possibleResult instanceof Promise) {
             const base64 = await possibleResult;
@@ -431,8 +451,13 @@ const FullPhoto = () => {
                 resolve(null);
               }, 6000);
 
-              const onPhoto = (e: any) => {
-                const base64 = e.detail?.base64 || e.base64 || (typeof e === 'string' ? e : null);
+              const onPhoto = (payload: unknown) => {
+                let base64: unknown = payload;
+                if (typeof payload === 'object' && payload !== null) {
+                  const detail: unknown = 'detail' in payload ? payload.detail : payload;
+                  base64 = typeof detail === 'object' && detail !== null && 'base64' in detail
+                    ? detail.base64 : null;
+                }
                 if (typeof base64 === 'string' && base64.length > 100) {
                   clearTimeout(timeout);
                   cleanup();
@@ -443,7 +468,7 @@ const FullPhoto = () => {
                 }
               };
 
-              (window as any).onXBTNativePhoto = onPhoto;
+              window.onXBTNativePhoto = onPhoto;
 
               const events = ['xbt-native-photo', 'xbt-native-camera-photo', 'native-photo'];
               const targets = [window, document];
@@ -453,7 +478,7 @@ const FullPhoto = () => {
               });
 
               function cleanup() {
-                delete (window as any).onXBTNativePhoto;
+                delete window.onXBTNativePhoto;
                 events.forEach(ev => {
                   targets.forEach(target => target.removeEventListener(ev, onPhoto));
                 });
@@ -487,9 +512,24 @@ const FullPhoto = () => {
 
       const file = new File([photoBlob], `photo-${Date.now()}.jpg`, { type: 'image/jpeg' });
       const url = URL.createObjectURL(photoBlob);
+      const nextFiles = [...capturedFiles, file];
       
-      setCapturedFiles(prev => [...prev, file]);
+      setCapturedFiles(nextFiles);
       setCapturedPreviews(prev => [...prev, url]);
+
+      if (faceMode && activity) {
+        toast.success("人脸照片已采集，正在返回");
+        navigate(backTarget as string, {
+          state: {
+            ...location.state,
+            returnedPhotos: nextFiles,
+            returnTo: undefined,
+          },
+          replace: true
+        });
+        return;
+      }
+
       toast.success("已添加至照片池");
     } catch (err) {
       console.error("Capture error:", err);
@@ -504,10 +544,11 @@ const FullPhoto = () => {
       navigate(-1);
       return;
     }
-    navigate(`/sign/${activity.active_id}`, {
+    navigate(backTarget as string, {
       state: {
         ...location.state,
-        returnedPhotos: capturedFiles
+        returnedPhotos: capturedFiles,
+        returnTo: undefined,
       },
       replace: true
     });
@@ -548,7 +589,7 @@ const FullPhoto = () => {
         <button onClick={() => navigate(-1)} className="p-2 active:opacity-60 transition-opacity pointer-events-auto">
           <ChevronLeft size={32} />
         </button>
-        <h2 className="text-[20px] font-normal tracking-widest">拍照签到</h2>
+        <h2 className="text-[20px] font-normal tracking-widest">{faceMode ? '人脸验证' : '拍照签到'}</h2>
         <button 
           onClick={handleFinish}
           className="px-4 py-1.5 bg-blue-600 text-white rounded-full text-sm font-bold shadow-sm pointer-events-auto active:scale-95 transition-transform"
@@ -576,10 +617,11 @@ const FullPhoto = () => {
         )}
 
         <div className="flex items-center gap-8">
-          <button onClick={() => setShowCameraList(true)} className="w-14 h-14 bg-black/40 rounded-full flex items-center justify-center backdrop-blur-md border border-white/10 text-white shadow-lg pointer-events-auto">
+          <button aria-label="切换摄像头" onClick={() => setShowCameraList(true)} className="w-14 h-14 bg-black/40 rounded-full flex items-center justify-center backdrop-blur-md border border-white/10 text-white shadow-lg pointer-events-auto">
             <Camera size={22} />
           </button>
           <button 
+            aria-label="拍照"
             onClick={handleCapture}
             disabled={isCapturing}
             className="w-20 h-20 bg-white rounded-full flex items-center justify-center shadow-2xl active:scale-90 transition-transform disabled:opacity-50 pointer-events-auto"
@@ -627,4 +669,3 @@ const FullPhoto = () => {
 };
 
 export default FullPhoto;
-
